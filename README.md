@@ -109,8 +109,8 @@ Spring Boot 4.1.0, Java 25, `application.yml` only. Env overrides:
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `DCRE_PAY_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | the payments CockroachDB |
-| `DCRE_PAY_DB_USER` / `DCRE_PAY_DB_PASSWORD` | `root` / empty | DB credentials |
+| `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | the payments CockroachDB |
+| `DCRE_DB_USER` / `DCRE_DB_PASSWORD` | `root` / empty | DB credentials |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../../infra/dcre-infra/exchange` | outcome seam directory |
 | `DCRE_PTV_MAX_PARTITIONS` | `5` | R-41 validation grid size cap (clamped to cgroup-aware CPU count) |
 | `DCRE_PTV_ACCEPTANCE_MODE_DEFAULT` | `ALL_OR_NOTHING` | R-41 default acceptance mode |

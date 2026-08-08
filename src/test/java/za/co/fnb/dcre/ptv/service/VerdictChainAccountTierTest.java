@@ -36,6 +36,29 @@ class VerdictChainAccountTierTest {
         assertEquals(CtvOutcome.FAIL_ACCOUNT_NOT_FOUND, VerdictChain.classify(second, Map.of()));
     }
 
+    /**
+     * The unset-cap arm, asserted HERE because it cannot be reached through the table.
+     * {@code chk_account_product_amount} on {@code dcre_pay.account} requires a balance for
+     * FNBRF and a limit for FNBCC, so no row a loader writes can carry a null cap; the chain
+     * is DB-free, so the branch is reachable and assertable directly. It moved out of the
+     * BDD feature and out of the verdict-semantics fixture when the real relation arrived,
+     * and the harness now refuses to manufacture such a row rather than relaxing the
+     * constraint to reach it.
+     *
+     * <p>The behaviour itself is UNCHANGED. This row EXISTS: existence and activity have both
+     * been checked and passed, and only its limit is unset, which is a different question from
+     * existence. Whether an unset cap should itself be a rejection is an account-model
+     * question, recorded not decided. Same assertion as
+     * {@code ctv VerdictChainAccountTierTest.anExistingAccountWithAnUnsetCapStillPassesOnEndo};
+     * these two chains are forks of one another.
+     */
+    @Test
+    void anExistingAccountWithAnUnsetCapStillPasses() {
+        Account account = new Account("62999999999901", "FNBCC", null, null, "ACTIVE");
+        assertEquals(CtvOutcome.PASS, VerdictChain.classify(ENTRY, Map.of(account.accountNumber(), account)),
+                "the row exists and only its cap is unset; that is not the absence arm");
+    }
+
     @Test
     void aMatchedActiveAccountUnderCapStillPasses() {
         Account account = new Account("62999999999901", "FNBRF", new BigDecimal("500.00"), null, "ACTIVE");

@@ -53,14 +53,22 @@ public final class PtvTestTables {
      * process status, which is what the verdict chain reads; the settlement {@code
      * status} column carries the fixture's AAUT so the row is a whole row rather than
      * the four columns this suite happens to care about.
+     *
+     * <p>{@code cap="none"} is REJECTED rather than mapped to NULL. That row cannot exist
+     * in {@code dcre_pay.account}, and the alternative, dropping the constraint from inside
+     * this helper, would weaken every later insert in the caller's container for the rest of
+     * its life and do it silently. Throwing makes the impossibility loud at the call site.
+     * Same shape as {@code CtvTestTables.insertAccount}; these two services are twins and a
+     * divergence here is the drift class this wave exists to remove.
      */
     public static void insertAccount(JdbcTemplate jdbc, String number, String productCode,
                                      String cap, String status) {
-        boolean capless = "none".equals(cap);
-        if (capless) {
-            allowUnsetCap(jdbc);
+        if ("none".equals(cap)) {
+            throw new IllegalArgumentException("dcre_pay.account cannot hold a row with no cap:"
+                    + " chk_account_product_amount requires a balance for FNBRF and a limit for"
+                    + " FNBCC. Assert the unset-cap arm in VerdictChainAccountTierTest instead.");
         }
-        BigDecimal capValue = capless ? null : new BigDecimal(cap);
+        BigDecimal capValue = new BigDecimal(cap);
         boolean balanceCarrying = productCode.startsWith("FNBRF");
         jdbc.update("""
                 INSERT INTO account (account_number, product_code, status, app_no, acc_type,
@@ -72,26 +80,6 @@ public final class PtvTestTables {
                 balanceCarrying ? capValue : null,
                 balanceCarrying ? null : capValue,
                 status, number);
-    }
-
-    /**
-     * Drops {@code chk_account_product_amount} for the fixtures that model an account
-     * whose cap is UNSET.
-     *
-     * <p>That state is not representable in the settled collections shape: the constraint
-     * requires an FNBRF row to carry a balance and an FNBCC row to carry a limit, so a
-     * capless row of either product is rejected. The verdict chain nevertheless has a
-     * NULL-cap arm and it is reachable in a database whose rows were not written by this
-     * loader, so the behaviour is worth asserting. Relaxing the constraint explicitly,
-     * per fixture, says exactly that; the old harness said it by creating a narrower
-     * table, which said nothing at all.
-     *
-     * <p>The constraint's own enforcement is proved separately and is unaffected by this:
-     * see {@code AccountReferenceConstraintIT}, which runs against the Liquibase-created
-     * table with all three constraints in place.
-     */
-    public static void allowUnsetCap(JdbcTemplate jdbc) {
-        jdbc.execute("ALTER TABLE account DROP CONSTRAINT IF EXISTS chk_account_product_amount");
     }
 
     public static void insertHeader(JdbcTemplate jdbc, UUID arrival, int txCount) {

@@ -35,9 +35,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * account the reference store does not hold is now {@code FAIL_ACCOUNT_NOT_FOUND}: a
  * rejection carrying its own reason, not a PASS. The old rationale was that PAI would
  * create the account downstream (create-if-absent, R-11), which made the account tier
- * a control that answered PASS in exactly the case it exists to catch. A known account
- * with a NULL cap still passes: that row EXISTS and only its cap is unset, which is a
- * different question and one the open account-model decision owns.
+ * a control that answered PASS in exactly the case it exists to catch.
+ *
+ * <p>The unset-cap arm is NOT asserted here. That row EXISTS and only its cap is unset,
+ * which is a different question and one the open account-model decision owns, but
+ * {@code chk_account_product_amount} on the real relation forbids such a row outright, so
+ * it is asserted in {@code VerdictChainAccountTierTest} where the chain is DB-free.
  *
  * <p>Note what is NOT here and cannot be: CTV's ENDO suites have to aim a CLOSED
  * PORT at {@code dcre.ctv.mandates-db-url} to prove nothing opens a dcre_man
@@ -94,7 +97,7 @@ class PtvVerdictSemanticsTest {
                 1, "FAIL_ACCOUNT_NOT_FOUND",   // absent from the reference store: rejected
                 2, "FAIL_ACCOUNT_NOT_FOUND",   // second absent account, same rejection
                 3, "PASS",                    // known, under cap
-                4, "PASS",                    // known, NULL cap: row exists, cap unset
+                4, "PASS",                    // known FNBCC, 300.00 under its 5000.00 limit
                 5, "FAIL_EXCEEDS_RF_BALANCE", // existing over-cap account still fails
                 6, "FAIL_ACCOUNT_NOT_ACTIVE"  // existing but SUSPENDED
         );
@@ -134,14 +137,14 @@ class PtvVerdictSemanticsTest {
         // shape. This suite used to stand up a six-column imitation of it, which meant
         // every verdict below was read off a table that existed nowhere.
         //
-        // [SYNTHETIC-CONTRACT R-35] The NULL-cap row at 62000000000002 models the pre-init
-        // account state chk_account_product_amount forbids for settled rows, so the fixture
-        // drops that ONE constraint and says so. The other two stay armed, and the
-        // constraint's own enforcement is proved against the untouched table by
-        // AccountReferenceConstraintIT.
-        PtvTestTables.allowUnsetCap(jdbc);
+        // Every row here is one dcre_pay.account would actually accept, all three CHECK
+        // constraints armed. 62000000000002 was a NULL-cap FNBCC row until SCRUM-107; that
+        // row is unrepresentable under chk_account_product_amount, so it is now an FNBCC
+        // account UNDER its limit, which keeps what this case was testing (a credit product
+        // passing the cap tier) and stops manufacturing a state no loader can write. The
+        // unset-cap arm moved to VerdictChainAccountTierTest, where the chain is DB-free.
         upsertAccount("62000000000001", "FNBRF", new BigDecimal("5000.00"), null, "ACTIVE");
-        upsertAccount("62000000000002", "FNBCC", null, null, "ACTIVE");
+        upsertAccount("62000000000002", "FNBCC", null, new BigDecimal("5000.00"), "ACTIVE");
         upsertAccount("62000000000003", "FNBRF", new BigDecimal("100.00"), null, "ACTIVE");
         upsertAccount("62000000000004", "FNBRF", new BigDecimal("5000.00"), null, "SUSPENDED");
     }

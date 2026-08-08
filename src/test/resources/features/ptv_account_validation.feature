@@ -5,8 +5,15 @@
 # store does not hold is rejected with FAIL_ACCOUNT_NOT_FOUND, not passed through.
 # The A-20 draft passed it on the grounds that PAI would create it downstream
 # (create-if-absent, R-11), which left the tier answering PASS in precisely the
-# case it exists to catch. A KNOWN account whose cap is unset still passes: the
-# row exists and only the cap is missing, which is a different question.
+# case it exists to catch.
+#
+# The "no recorded cap" scenario is GONE from this file rather than inverted. The
+# arm still behaves as it did (an EXISTING account with an unset cap passes), but
+# chk_account_product_amount on dcre_pay.account forbids such a row outright, so it
+# cannot be reached through the table any more. It is asserted where it lives, in
+# VerdictChainAccountTierTest, and a Given step that seeds it now fails loudly
+# rather than silently mapping the cap to NULL. Matches collections/ctv, whose
+# ctv_endo_mode.feature dropped the twin scenario for the same reason.
 #
 # "Absent" and "could not be read" are different outcomes and must stay so. This
 # feature covers the business half only; an unreadable reference store halts the
@@ -47,11 +54,6 @@ Feature: PTV account-level validation of inbound payment requests
     Given a payments account "63010000000005" with product "FNBCC", cap "1000.00" and status "ACTIVE"
     When PTV validates a payment of "1500.00" against account "63010000000005"
     Then the record is rejected with outcome "FAIL_EXCEEDS_CC_LIMIT"
-
-  Scenario: Payment against a known account with no recorded cap passes on the cap tier
-    Given a payments account "63010000000006" with product "FNBCC", cap "none" and status "ACTIVE"
-    When PTV validates a payment of "100.00" against account "63010000000006"
-    Then the record is marked valid with outcome "PASS"
 
   Scenario: Payment reusing an EndToEndId already seen in the file
     Given a payments account "63010000000007" with product "FNBRF", cap "5000.00" and status "ACTIVE"

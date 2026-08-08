@@ -3,6 +3,15 @@ spring:
   threads:
     virtual:
       enabled: true
+  batch:
+    # SCRUM-107: PTV now ships TWO jobs, the validation flow and the account reference
+    # loader, and Boot requires a name once more than one Job bean exists. The default
+    # is the validation flow, so every launch that says nothing behaves exactly as it
+    # did; AGT overrides DCRE_PTV_JOB_NAME with ptvAccountReferenceLoadJob to
+    # materialise the reference artifact. Same selector MRG uses for its report/sweep
+    # pair; the pivot constant is AccountReferenceJobConfig.JOB_NAME.
+    job:
+      name: ${DCRE_PTV_JOB_NAME:ptvJob}
   datasource:
     # dcre_pay, NOT dcre_col: the payments split gives this family its own
     # database, and that database is now the family discriminator.
@@ -37,6 +46,20 @@ dcre:
   # (SPEC-ENDO-COLLECTIONS-FLOW.md: "No mandates, no mandate gate").
   ptv:
     max-partitions: ${DCRE_PTV_MAX_PARTITIONS:5}
+    reference:
+      account:
+        # The artifact root, relative in exactly the form dcre.exchange-root above uses:
+        # six ../ hops from this service directory to infra/dcre-infra. A clean clone
+        # runs with no .env at all.
+        root: ${DCRE_PTV_ACCOUNT_REFERENCE_ROOT:../../../../../../infra/dcre-infra/fixtures/reference/account}
+        # DECLARED, never discovered. There is no "newest directory" behaviour: that is
+        # a fail-open, and a version this service did not ask for is a version nobody
+        # decided to adopt.
+        dataset-version: ${DCRE_PTV_ACCOUNT_DATASET_VERSION:2026.08.09-001}
+        # max-age: DELIBERATELY UNSET. The freshness contract is A-4's to define, so the
+        # check ships wired and INERT and logs that it is inert on every run. Setting it
+        # here, or in any test resource, would be this service inventing a number about
+        # somebody else's dataset. Setting it ARMS the gate with no code change.
     acceptance-mode:
       default: ${DCRE_PTV_ACCEPTANCE_MODE_DEFAULT:ALL_OR_NOTHING}
       # Per-client override map. No DCRE_* env var is wired for the map: set

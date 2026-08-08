@@ -130,18 +130,16 @@ class PtvVerdictSemanticsTest {
     }
 
     void seedReferenceData() {
-        // Minimal PAI-shaped account read model (PTV maps only these columns).
-        // [SYNTHETIC-CONTRACT R-35] Deliberately WITHOUT the fixture seed's
-        // product/cap CHECK constraint: the NULL-cap row models exactly the
-        // pre-init account state that constraint forbids for settled rows.
-        jdbc.execute("""
-                CREATE TABLE IF NOT EXISTS account (
-                    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                    account_number VARCHAR(34) NOT NULL UNIQUE,
-                    product_code VARCHAR(8) NOT NULL,
-                    balance DECIMAL(18,2) NULL,
-                    max_credit_limit DECIMAL(18,2) NULL,
-                    process_status VARCHAR(16) NOT NULL)""");
+        // The REAL relation, created by 003-account-reference.xml in the full collections
+        // shape. This suite used to stand up a six-column imitation of it, which meant
+        // every verdict below was read off a table that existed nowhere.
+        //
+        // [SYNTHETIC-CONTRACT R-35] The NULL-cap row at 62000000000002 models the pre-init
+        // account state chk_account_product_amount forbids for settled rows, so the fixture
+        // drops that ONE constraint and says so. The other two stay armed, and the
+        // constraint's own enforcement is proved against the untouched table by
+        // AccountReferenceConstraintIT.
+        PtvTestTables.allowUnsetCap(jdbc);
         upsertAccount("62000000000001", "FNBRF", new BigDecimal("5000.00"), null, "ACTIVE");
         upsertAccount("62000000000002", "FNBCC", null, null, "ACTIVE");
         upsertAccount("62000000000003", "FNBRF", new BigDecimal("100.00"), null, "ACTIVE");
@@ -151,8 +149,12 @@ class PtvVerdictSemanticsTest {
     void upsertAccount(String number, String productCode, BigDecimal balance, BigDecimal limit,
                        String status) {
         jdbc.update("""
-                UPSERT INTO account (account_number, product_code, balance, max_credit_limit, process_status)
-                VALUES (?,?,?,?,?)""", number, productCode, balance, limit, status);
+                UPSERT INTO account (account_number, product_code, status, app_no, acc_type,
+                                     branch_code, balance, max_credit_limit, cancel_reason,
+                                     country_id, edr_ind, pre_ind, process_status, status_reason,
+                                     ucn, client_id)
+                VALUES (?,?,'AAUT',?,'CACC','250205',?,?,NULL,1,false,false,?,NULL,?,2)""",
+                number, productCode, number, balance, limit, status, number);
     }
 
     void seedSpine(UUID arrival) {

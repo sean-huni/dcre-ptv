@@ -5,7 +5,10 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
@@ -37,16 +40,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * SCRUM-107 repair 1, technical arm at JOB level: when the account reference store
  * cannot be read at all, the job HALTS. It does not verdict.
  *
- * <p>The fixture is the state {@code dcre_pay} is actually in today: the spine
- * relations exist, and {@code account} does not, because no changelog in the payments
- * family creates it and the decision about where the account master lives is open.
- * Before this repair that state produced a file of PASS verdicts, which is the worst
- * available answer: a fail-closed control reporting success while blind. The
+ * <p>The fixture is a {@code dcre_pay} whose {@code account} relation has been DROPPED.
+ * Until SCRUM-107 that was simply the state the database was in, because no changelog in
+ * the payments family created the relation at all; 003-account-reference.xml now does, so
+ * the absence has to be induced. It is still the state a database is in before its first
+ * reference load, and before this repair it produced a file of PASS verdicts, which is the
+ * worst available answer: a fail-closed control reporting success while blind. The
  * assertions below are deliberately about ABSENCE of verdicts as much as about the
  * failure, because "halted" and "verdicted everything" are the two outcomes that must
  * never be confused.
+ *
+ * <p>The two tests are ORDERED, and they have to be. One of them drops the relation the
+ * other needs, and JUnit guarantees no order by default, so the control has to run first
+ * against the Liquibase-created table rather than re-creating a hand-written stand-in for
+ * it. A test that stands up its own narrower copy of the real table proves nothing about
+ * the real table.
  */
 @SpringBootTest(properties = "spring.batch.job.enabled=false")
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class AccountStoreUnavailableIT {
 
     static final CockroachContainer CRDB =
@@ -102,6 +113,7 @@ class AccountStoreUnavailableIT {
     }
 
     @Test
+    @Order(2)
     void anAbsentAccountRelationHaltsTheJobAndWritesNoVerdict() throws Exception {
         UUID arrival = UUID.randomUUID();
         seedSpineOnly(arrival);
@@ -140,22 +152,16 @@ class AccountStoreUnavailableIT {
     }
 
     @Test
+    @Order(1)
     void theSameFixtureWithTheRelationPresentVerdictsNormally() throws Exception {
         // Control (rule: a broken harness and a broken subject look identical without one).
         // Same spine, same job, the ONLY difference is that the reference store is readable.
+        // The relation here is the LIQUIBASE-created one, in the full collections shape, so
+        // the control proves the real table serves a verdict rather than proving a
+        // hand-written imitation of it does.
         UUID arrival = UUID.randomUUID();
         seedSpineOnly(arrival);
-        jdbc.execute("""
-                CREATE TABLE IF NOT EXISTS account (
-                    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                    account_number VARCHAR(34) NOT NULL UNIQUE,
-                    product_code VARCHAR(8) NOT NULL,
-                    balance DECIMAL(18,2) NULL,
-                    max_credit_limit DECIMAL(18,2) NULL,
-                    process_status VARCHAR(16) NOT NULL)""");
-        jdbc.update("""
-                UPSERT INTO account (account_number, product_code, balance, max_credit_limit, process_status)
-                VALUES (?,'FNBRF',?,NULL,'ACTIVE')""", "62880000000001", new BigDecimal("5000.00"));
+        PtvTestTables.insertAccount(jdbc, "62880000000001", "FNBRF", "5000.00", "ACTIVE");
 
         JobExecution run = jobOperator.start(ptvJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
@@ -168,7 +174,6 @@ class AccountStoreUnavailableIT {
         assertEquals(1, seamFiles(),
                 "control for the absence assertion above: a COMPLETED run DOES write a seam,"
                         + " so counting zero there is a fact about the failure, not about the harness");
-        jdbc.execute("DROP TABLE IF EXISTS account");
     }
 
     private static long seamFiles() {

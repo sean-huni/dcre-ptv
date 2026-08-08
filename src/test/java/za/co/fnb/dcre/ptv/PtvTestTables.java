@@ -6,14 +6,21 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Shared seeding helpers: the minimal PAI-shaped account read model and the
- * PRR-owned spine tables that PTV reads out of {@code dcre_pay}.
- * {@code validation_log} itself comes from this service's Liquibase changelog.
+ * Shared seeding helpers for the PRR-owned spine tables that PTV reads out of
+ * {@code dcre_pay}, and for the account reference rows the verdict chain reads.
+ * {@code validation_log} and, since SCRUM-107, {@code account} itself both come from
+ * this service's Liquibase changelog.
  *
- * <p>No {@code mandate_ref} column and no mandateRef overload. CTV's harness grew
- * both so its suites could exercise the projection gate; PTV has no such gate, and
- * a column nothing maps would let a future test seed a value that silently means
- * nothing.
+ * <p><b>This harness no longer creates {@code account}.</b> It used to, with a
+ * six-column shape that existed nowhere in the estate, because nothing created the
+ * relation for real. 003-account-reference.xml now does, in the full collections shape
+ * with its NOT NULLs and its three CHECK constraints, so a test seeding a row has to
+ * seed a row the real table would accept. That is the point: a fixture narrower than the
+ * table it stands for is a drift class no green suite can see.
+ *
+ * <p>No {@code mandate_ref} column and no mandateRef overload. CTV's harness grew both
+ * so its suites could exercise the projection gate; PTV has no such gate, and a column
+ * nothing maps would let a future test seed a value that silently means nothing.
  */
 public final class PtvTestTables {
 
@@ -24,14 +31,6 @@ public final class PtvTestTables {
     }
 
     public static void create(JdbcTemplate jdbc) {
-        jdbc.execute("""
-                CREATE TABLE IF NOT EXISTS account (
-                    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                    account_number VARCHAR(34) NOT NULL UNIQUE,
-                    product_code VARCHAR(8) NOT NULL,
-                    balance DECIMAL(18,2) NULL,
-                    max_credit_limit DECIMAL(18,2) NULL,
-                    process_status VARCHAR(16) NOT NULL)""");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS tx_header (
                     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -49,17 +48,50 @@ public final class PtvTestTables {
                     UNIQUE (arrival_id, sequence))""");
     }
 
+    /**
+     * Seeds one account in the REAL collections shape. {@code status} is the row's
+     * process status, which is what the verdict chain reads; the settlement {@code
+     * status} column carries the fixture's AAUT so the row is a whole row rather than
+     * the four columns this suite happens to care about.
+     */
     public static void insertAccount(JdbcTemplate jdbc, String number, String productCode,
                                      String cap, String status) {
-        BigDecimal capValue = "none".equals(cap) ? null : new BigDecimal(cap);
+        boolean capless = "none".equals(cap);
+        if (capless) {
+            allowUnsetCap(jdbc);
+        }
+        BigDecimal capValue = capless ? null : new BigDecimal(cap);
         boolean balanceCarrying = productCode.startsWith("FNBRF");
         jdbc.update("""
-                INSERT INTO account (account_number, product_code, balance, max_credit_limit, process_status)
-                VALUES (?,?,?,?,?)""",
-                number, productCode,
+                INSERT INTO account (account_number, product_code, status, app_no, acc_type,
+                                     branch_code, balance, max_credit_limit, cancel_reason,
+                                     country_id, edr_ind, pre_ind, process_status, status_reason,
+                                     ucn, client_id)
+                VALUES (?,?,'AAUT',?,'CACC','250205',?,?,NULL,1,false,false,?,NULL,?,2)""",
+                number, productCode, number,
                 balanceCarrying ? capValue : null,
                 balanceCarrying ? null : capValue,
-                status);
+                status, number);
+    }
+
+    /**
+     * Drops {@code chk_account_product_amount} for the fixtures that model an account
+     * whose cap is UNSET.
+     *
+     * <p>That state is not representable in the settled collections shape: the constraint
+     * requires an FNBRF row to carry a balance and an FNBCC row to carry a limit, so a
+     * capless row of either product is rejected. The verdict chain nevertheless has a
+     * NULL-cap arm and it is reachable in a database whose rows were not written by this
+     * loader, so the behaviour is worth asserting. Relaxing the constraint explicitly,
+     * per fixture, says exactly that; the old harness said it by creating a narrower
+     * table, which said nothing at all.
+     *
+     * <p>The constraint's own enforcement is proved separately and is unaffected by this:
+     * see {@code AccountReferenceConstraintIT}, which runs against the Liquibase-created
+     * table with all three constraints in place.
+     */
+    public static void allowUnsetCap(JdbcTemplate jdbc) {
+        jdbc.execute("ALTER TABLE account DROP CONSTRAINT IF EXISTS chk_account_product_amount");
     }
 
     public static void insertHeader(JdbcTemplate jdbc, UUID arrival, int txCount) {

@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+        SCRUM-107: dcre_pay.account, the payments materialisation of the versioned
+        account reference artifact.
+
+        WHY IT ARRIVES HERE AND NOW. ReferenceSnapshotDao has always read
+        "FROM account" on the dcre_pay datasource and NOTHING in the estate created
+        that relation: pai/001-pai.xml creates pai_verdict and
+        pai/003-unknown-creditor.xml creates unknown_creditor, neither of which is
+        this. That absent relation is exactly what ReferenceUnavailableException and
+        AccountStoreUnavailableIT exist to describe. PTV is now the creator and
+        ptvAccountReferenceLoadJob is the filler.
+
+        THE SHAPE IS THE COLLECTIONS PROJECTION, NOT A UNION. Sixteen business
+        columns plus the UUID key, lifted from the pre-ACS dcre_col.account DDL
+        (recoverable at infra/dcre-infra HEAD:fixtures/seed/dcre_col_accounts.sql),
+        with its ORIGINAL NOT NULL set intact. collections/ctv materialises the same
+        projection into dcre_col; the two are one shape in two databases and a
+        difference between them is drift, not local adaptation. The mandates family
+        keeps its own narrower shape, and neither side is widened to admit the other:
+        per-context materialisation exists precisely so each table keeps the
+        constraints its own family requires instead of relaxing them to a nullable
+        union, which is what the retired shared store did.
+
+        This is a fresh version 1 for a relation that cannot already exist in
+        dcre_pay, so there is no validCheckSum ANY, no defensive precondition and no
+        MARK_RAN: every one of those is a guard against history this table has none of.
+
+        One documented departure from the recovered DDL: updated_at carries
+        DEFAULT now() but NOT CockroachDB's ON UPDATE now() clause. Liquibase ships no
+        typed tag for it, the loader deletes and re-inserts rather than updating, and
+        an UPDATE nothing issues is not worth a raw-SQL changeset.
+    -->
+    <changeSet id="ptv-003-account" author="dcre">
+        <createTable tableName="account">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="product_code" type="VARCHAR(8)"><constraints nullable="false"/></column>
+            <column name="account_number" type="VARCHAR(34)"><constraints nullable="false"/></column>
+            <column name="app_no" type="VARCHAR(34)"><constraints nullable="false"/></column>
+            <column name="acc_type" type="VARCHAR(4)"><constraints nullable="false"/></column>
+            <column name="branch_code" type="VARCHAR(11)"><constraints nullable="false"/></column>
+            <column name="balance" type="DECIMAL(18,2)"/>
+            <column name="max_credit_limit" type="DECIMAL(18,2)"/>
+            <column name="cancel_reason" type="VARCHAR(64)"/>
+            <column name="country_id" type="BIGINT" defaultValueNumeric="1">
+                <constraints nullable="false"/>
+            </column>
+            <column name="edr_ind" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+            <column name="pre_ind" type="BOOLEAN" defaultValueBoolean="false">
+                <constraints nullable="false"/>
+            </column>
+            <column name="process_status" type="VARCHAR(16)"><constraints nullable="false"/></column>
+            <column name="status" type="VARCHAR(8)"><constraints nullable="false"/></column>
+            <column name="status_reason" type="VARCHAR(64)"/>
+            <column name="ucn" type="VARCHAR(20)"><constraints nullable="false"/></column>
+            <column name="client_id" type="BIGINT"><constraints nullable="false"/></column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="account"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The business identity. CockroachDB resolves UPSERT on the PRIMARY KEY only,
+         so an account_number uniqueness claim has to be its own constraint or it is
+         not enforced at all. -->
+    <changeSet id="ptv-003-account-identity" author="dcre">
+        <addUniqueConstraint tableName="account" columnNames="account_number"
+                             constraintName="uq_account_account_number"/>
+        <rollback>
+            <dropUniqueConstraint tableName="account"
+                                  constraintName="uq_account_account_number"/>
+        </rollback>
+    </changeSet>
+
+    <!-- LIQUIBASE-SQL-EXCEPTION: the open-source Liquibase distribution ships NO
+         check-constraint change type. The column-level checkConstraint attribute
+         parses and is then a NO-OP (verified against liquibase-core 5.0.3:
+         CreateTableChange never reads it), so relying on it would silently produce a
+         table with none of these three invariants. Raw SQL is the only expression
+         available, and AccountReferenceConstraintIT asserts each constraint actually
+         REJECTS a bad row rather than merely existing in the catalogue.
+
+         Both files sit under db/sql/ rather than beside this changelog because
+         everything under db/changelog/ must be XML (rules/be/java/persistence.md
+         point 22, hook-enforced). -->
+    <changeSet id="ptv-003-account-checks" author="dcre">
+        <sqlFile path="db/sql/account-checks-ptv.sql" splitStatements="true"/>
+        <rollback>
+            <sqlFile path="db/sql/account-checks-ptv-rollback.sql" splitStatements="true"/>
+        </rollback>
+    </changeSet>
+
+    <!--
+        What a run consumed, written in the SAME transaction as the rows it loaded.
+        A load record committed apart from its data would be a claim about a state the
+        database might not be in.
+
+        No column repeats its host table's name: dataset_version, not
+        account_reference_load_dataset_version.
+    -->
+    <changeSet id="ptv-003-account-reference-load" author="dcre">
+        <createTable tableName="account_reference_load">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="dataset_version" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="schema_version" type="INT"><constraints nullable="false"/></column>
+            <column name="source_id" type="VARCHAR(256)"><constraints nullable="false"/></column>
+            <column name="effective_ts" type="TIMESTAMPTZ"><constraints nullable="false"/></column>
+            <column name="publication_ts" type="TIMESTAMPTZ"><constraints nullable="false"/></column>
+            <column name="row_count" type="INT"><constraints nullable="false"/></column>
+            <column name="checksum" type="VARCHAR(64)"><constraints nullable="false"/></column>
+            <column name="applied_row_count" type="INT"><constraints nullable="false"/></column>
+            <!-- Nullable: a load driven outside Spring Batch has no execution to name,
+                 and inventing one would make the column a lie rather than a link. -->
+            <column name="job_execution_id" type="BIGINT"/>
+            <!-- BaseEntity trio (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="account_reference_load"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

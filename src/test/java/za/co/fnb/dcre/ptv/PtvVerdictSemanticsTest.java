@@ -31,10 +31,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * The payments verdict semantics, end to end through the real job.
  *
- * <p>[SYNTHETIC-CONTRACT R-35] These are CTV's ENDO-mode semantics (A-20 draft),
- * now unconditional rather than switched on {@code dcre.flow-dc=false}: PAI creates
- * absent accounts downstream (create-if-absent), so an unknown account and a known
- * account with a NULL cap both PASS. An EXISTING over-cap account still fails.
+ * <p>SCRUM-107 repair 1 replaced the A-20 draft pass-through on an ABSENT account. An
+ * account the reference store does not hold is now {@code FAIL_ACCOUNT_NOT_FOUND}: a
+ * rejection carrying its own reason, not a PASS. The old rationale was that PAI would
+ * create the account downstream (create-if-absent, R-11), which made the account tier
+ * a control that answered PASS in exactly the case it exists to catch. A known account
+ * with a NULL cap still passes: that row EXISTS and only its cap is unset, which is a
+ * different question and one the open account-model decision owns.
  *
  * <p>Note what is NOT here and cannot be: CTV's ENDO suites have to aim a CLOSED
  * PORT at {@code dcre.ctv.mandates-db-url} to prove nothing opens a dcre_man
@@ -70,7 +73,7 @@ class PtvVerdictSemanticsTest {
     JdbcTemplate jdbc;
 
     @Test
-    void unknownAndNullCapAccountsPassThroughButOverCapStillFails() throws Exception {
+    void unknownAccountsAreRejectedWhileNullCapPassesAndOverCapStillFails() throws Exception {
         UUID arrival = UUID.randomUUID();
         seedReferenceData();
         seedSpine(arrival);
@@ -88,10 +91,10 @@ class PtvVerdictSemanticsTest {
                 "the over-cap entry must still fail");
 
         Map<Integer, String> expected = Map.of(
-                1, "PASS",                    // unknown account: PAI creates it downstream
-                2, "PASS",                    // second unknown account, same pass-through
+                1, "FAIL_ACCOUNT_NOT_FOUND",   // absent from the reference store: rejected
+                2, "FAIL_ACCOUNT_NOT_FOUND",   // second absent account, same rejection
                 3, "PASS",                    // known, under cap
-                4, "PASS",                    // known, NULL cap: cap check post-init
+                4, "PASS",                    // known, NULL cap: row exists, cap unset
                 5, "FAIL_EXCEEDS_RF_BALANCE", // existing over-cap account still fails
                 6, "FAIL_ACCOUNT_NOT_ACTIVE"  // existing but SUSPENDED
         );
@@ -100,17 +103,24 @@ class PtvVerdictSemanticsTest {
                 r -> {
                     actual.put(r.getInt(1), r.getString(2));
                 }, arrival);
-        assertEquals(expected, actual, "payments verdicts per A-20 draft [SYNTHETIC-CONTRACT R-35]");
+        assertEquals(expected, actual, "payments account-tier verdicts, fail closed on absence");
 
-        // R-38 exclusion visibility: exactly two FAIL verdicts -> exactly two WARNs at decision time.
+        // R-38 exclusion visibility: exactly four FAIL verdicts -> exactly four WARNs at
+        // decision time. These WARNs are the BUSINESS channel; the technical channel is the
+        // ERROR carrying reference-store-unavailable, asserted in AccountStoreUnavailableIT.
+        // Nothing may appear in both.
         List<String> exclusionWarns = warns.list.stream()
                 .filter(e -> e.getLevel() == Level.WARN)
                 .map(ILoggingEvent::getFormattedMessage)
                 .filter(m -> m.contains("excluded stage=PTV"))
                 .sorted()
                 .toList();
-        assertEquals(2, exclusionWarns.size(), "one WARN per FAIL verdict (R-38)");
+        assertEquals(4, exclusionWarns.size(), "one WARN per FAIL verdict (R-38)");
         assertEquals(List.of(
+                        "excluded stage=PTV arrival=" + arrival + " seq=1 e2e=ENDO-E2E-00001"
+                                + " reason=PTV_FAIL_ACCOUNT_NOT_FOUND",
+                        "excluded stage=PTV arrival=" + arrival + " seq=2 e2e=ENDO-E2E-00002"
+                                + " reason=PTV_FAIL_ACCOUNT_NOT_FOUND",
                         "excluded stage=PTV arrival=" + arrival + " seq=5 e2e=ENDO-E2E-00005"
                                 + " reason=PTV_FAIL_EXCEEDS_RF_BALANCE",
                         "excluded stage=PTV arrival=" + arrival + " seq=6 e2e=ENDO-E2E-00006"

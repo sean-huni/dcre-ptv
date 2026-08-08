@@ -111,9 +111,10 @@ class PtvSeamAndRollupIT {
     void allOrNothingFailWritesBusinessFileRejectedSeamAndKeepsDupVerdict() throws Exception {
         PtvTestTables.create(jdbc);
         UUID arrival = UUID.randomUUID();
-        // Content-dup pair on an UNKNOWN account: phase 2 would classify PASS
-        // (unknown accounts pass through to PAI), but the phase-1 FAIL_DUPLICATE_TX
-        // must win, and one FAIL under ALL_OR_NOTHING rejects the whole file.
+        // Content-dup pair on an UNKNOWN account: phase 2 would classify seq 2 as
+        // FAIL_ACCOUNT_NOT_FOUND (SCRUM-107 repair 1), but the phase-1 FAIL_DUPLICATE_TX
+        // must win, and one FAIL under ALL_OR_NOTHING rejects the whole file. The
+        // precedence assertion below is the point: the dup verdict is not overwritten.
         String unknown = "63979999999901";
         PtvTestTables.insertEntry(jdbc, arrival, 1, "E2E-SR-1", unknown, null, "100.00", "HASH-SR");
         PtvTestTables.insertEntry(jdbc, arrival, 2, "E2E-SR-2", unknown, null, "100.00", "HASH-SR");

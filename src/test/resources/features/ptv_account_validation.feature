@@ -1,12 +1,16 @@
 # PTV validates every ENDO payment read by PRR against the DCRE account store
 # before the record proceeds down the pipeline.
 #
-# [SYNTHETIC-CONTRACT R-35] These are CTV's ENDO-mode semantics (A-20 draft),
-# now unconditional because payments is the only family this service serves: an
-# unknown account and a known account with no recorded cap both PASS, since PAI
-# creates absent accounts downstream (create-if-absent, R-11) and the cap check
-# applies post-init. An EXISTING account that is inactive or over its cap still
-# fails. FAIL_ACCOUNT_NOT_FOUND is the DC verdict and is unreachable here.
+# SCRUM-107 repair 1: the account tier fails CLOSED. An account the reference
+# store does not hold is rejected with FAIL_ACCOUNT_NOT_FOUND, not passed through.
+# The A-20 draft passed it on the grounds that PAI would create it downstream
+# (create-if-absent, R-11), which left the tier answering PASS in precisely the
+# case it exists to catch. A KNOWN account whose cap is unset still passes: the
+# row exists and only the cap is missing, which is a different question.
+#
+# "Absent" and "could not be read" are different outcomes and must stay so. This
+# feature covers the business half only; an unreadable reference store halts the
+# job with no verdict at all (AccountStoreUnavailableIT).
 #
 # There is no mandate scenario. Payments carry no bank-registered mandates and
 # therefore no mandate gate (SPEC-ENDO-COLLECTIONS-FLOW.md).
@@ -23,10 +27,10 @@ Feature: PTV account-level validation of inbound payment requests
     When PTV validates a payment of "300.00" against account "63010000000002" under contract "CT-ACC-02"
     Then the record is marked valid with outcome "PASS"
 
-  Scenario: Payment against an account absent from the DCRE account store passes through for downstream creation
+  Scenario: Payment against an account absent from the DCRE account store is rejected
     When PTV validates a payment of "100.00" against account "63019999999901"
-    Then the record is marked valid with outcome "PASS"
-    And the job verdict is "BUSINESS_ACCEPTED"
+    Then the record is rejected with outcome "FAIL_ACCOUNT_NOT_FOUND"
+    And the job verdict is "BUSINESS_PARTIAL"
 
   Scenario: Payment against an account that is not ACTIVE
     Given a payments account "63010000000003" with product "FNBRF", cap "5000.00" and status "SUSPENDED"
@@ -44,7 +48,7 @@ Feature: PTV account-level validation of inbound payment requests
     When PTV validates a payment of "1500.00" against account "63010000000005"
     Then the record is rejected with outcome "FAIL_EXCEEDS_CC_LIMIT"
 
-  Scenario: Payment against a known account with no recorded cap passes through
+  Scenario: Payment against a known account with no recorded cap passes on the cap tier
     Given a payments account "63010000000006" with product "FNBCC", cap "none" and status "ACTIVE"
     When PTV validates a payment of "100.00" against account "63010000000006"
     Then the record is marked valid with outcome "PASS"

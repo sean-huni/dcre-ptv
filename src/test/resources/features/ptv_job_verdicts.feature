@@ -15,9 +15,10 @@ Feature: PTV arrival-level job verdicts and replay safety
     And record 1 is marked "PASS"
     And record 2 is marked "PASS"
 
-  # The mixed arrival fails its second record on the CAP, not on account absence:
-  # an unknown account passes through to PAI on payments, so CTV's
-  # FAIL_ACCOUNT_NOT_FOUND row cannot produce a BUSINESS_PARTIAL here.
+  # The mixed arrival fails its second record on the CAP. Account absence is a
+  # separate rejection reason (SCRUM-107 repair 1) and is covered in
+  # ptv_account_validation.feature; keeping this scenario on the cap keeps each
+  # scenario failing for exactly one reason.
   Scenario: An arrival mixing passing and failing payments is partially accepted
     Given a payments account "63030000000002" with product "FNBRF", cap "5000.00" and status "ACTIVE"
     And a payments account "63030000000012" with product "FNBRF", cap "50.00" and status "ACTIVE"

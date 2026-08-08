@@ -46,9 +46,10 @@ class PtvPartitionDeterminismIT {
         Map<Integer, String> expected = new HashMap<>();
         expected.put(1, "PASS");
         expected.put(2, "PASS");
-        // An UNKNOWN account passes through to PAI on payments; CTV's oracle has
-        // FAIL_ACCOUNT_NOT_FOUND here and that verdict is unreachable in PTV.
-        expected.put(3, "PASS");
+        // SCRUM-107 repair 1: an UNKNOWN account is rejected on payments too. The tier
+        // is fail-closed, and it must be so identically in both partition modes, which
+        // is the property this suite pins.
+        expected.put(3, "FAIL_ACCOUNT_NOT_FOUND");
         expected.put(4, "FAIL_DUPLICATE_TX");        // content clash with seq 1, fresh e2e
         expected.put(5, "FAIL_DUPLICATE_E2E");       // e2e clash with seq 1
         expected.put(6, "FAIL_EXCEEDS_RF_BALANCE");

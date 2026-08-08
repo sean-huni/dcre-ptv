@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- PTV owns validation_log in dcre_pay. A NEW database, so the verdict store
+         arrives as ONE file (001) rather than CTV's create-then-ALTER history, and
+         CTV's mandate cleanout (2026/08/001-drop-local-mandate.xml) has no
+         successor here: dcre_pay never held a mandate table. -->
+    <include file="db/changelog/2026/08/001-ptv-validation.xml"/>
+    <include file="db/changelog/2026/08/002-batch-metadata.xml"/>
+
+</databaseChangeLog>

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+        PTV's verdict store in dcre_pay. PTV is its single writer (R-04).
+
+        dcre_pay is a NEW database, so this arrives as ONE FILE of two typed
+        changesets rather than CTV's three-file history of retrofits: CTV builds
+        the same shape across 001-ctv (table + unique constraint) and 003-layering
+        (an ALTER adding the BaseEntity columns as raw SQL). Here the BaseEntity
+        columns are declared IN the createTable, so there is no ALTER to write and
+        the pure-XML rule (persistence.md) holds with typed tags only.
+
+        CTV's 2026/08/001-drop-local-mandate.xml has no successor here at all:
+        dcre_pay never held a mandate table, because a payment carries no
+        bank-registered mandate to gate on.
+
+        Re-run safety uses onFail="CONTINUE", never MARK_RAN. MARK_RAN records the
+        skip permanently, so a database that was merely NOT-YET-ready at the moment
+        of the check never gets the change at all; that shape has already cost this
+        project two defects (A-79, A-81). CONTINUE leaves the changeset unlogged and
+        re-evaluated on the next run, which is what a bootstrap guard actually wants.
+    -->
+    <changeSet id="ptv-001-validation-log" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="validation_log"/></not>
+        </preConditions>
+        <createTable tableName="validation_log">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="sequence" type="INT"><constraints nullable="false"/></column>
+            <column name="outcome" type="VARCHAR(32)"><constraints nullable="false"/></column>
+            <column name="detail" type="VARCHAR(256)"/>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="validation_log"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The R-05 idempotency key: the FULL business identity of a verdict row.
+         CockroachDB's UPSERT resolves on the PRIMARY KEY only, so both the dup
+         scan's ON CONFLICT (arrival_id, sequence) DO NOTHING and the partition
+         workers' batch upsert need this constraint to exist, or a restarted
+         chunk duplicates verdicts instead of no-opping. -->
+    <changeSet id="ptv-001-validation-log-identity" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="validation_log" indexName="uq_validation_arrival_sequence"/>
+            </not>
+        </preConditions>
+        <addUniqueConstraint tableName="validation_log" columnNames="arrival_id, sequence"
+                             constraintName="uq_validation_arrival_sequence"/>
+        <rollback>
+            <dropUniqueConstraint tableName="validation_log"
+                                  constraintName="uq_validation_arrival_sequence"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

@@ -27,6 +27,15 @@ public final class PtvTestTables {
     /** The fixture's business date. */
     public static final String BUSINESS_DATE = "20260711";
 
+    /** What a hand-seeded reference table claims it was loaded from. */
+    public static final String DATASET_VERSION = "2026.08.09-001";
+
+    /**
+     * The account {@link #materialiseReference} seeds so the table is non-empty. Outside
+     * every range the suites verdict against, so it can never be mistaken for a match.
+     */
+    public static final String REFERENCE_SENTINEL = "63960000000001";
+
     private PtvTestTables() {
     }
 
@@ -54,6 +63,10 @@ public final class PtvTestTables {
      * status} column carries the fixture's AAUT so the row is a whole row rather than
      * the four columns this suite happens to care about.
      *
+     * <p>It also records the load ({@link #markMaterialised}), because the real applier
+     * writes both in one transaction and SCRUM-107 repair 2 now reads that record to tell
+     * an unloaded table from an unknown account.
+     *
      * <p>{@code cap="none"} is REJECTED rather than mapped to NULL. That row cannot exist
      * in {@code dcre_pay.account}, and the alternative, dropping the constraint from inside
      * this helper, would weaken every later insert in the caller's container for the rest of
@@ -80,6 +93,53 @@ public final class PtvTestTables {
                 balanceCarrying ? capValue : null,
                 balanceCarrying ? null : capValue,
                 status, number);
+        markMaterialised(jdbc);
+    }
+
+    /**
+     * Records that a load happened, with {@code applied_row_count} equal to what
+     * {@code account} ACTUALLY holds at this moment.
+     *
+     * <p>SCRUM-107 repair 2 made this part of the fixture rather than an optional extra. The
+     * real applier writes the load record in the SAME transaction as the rows, so a table
+     * holding rows with no load record is a state {@code dcre_pay} cannot reach, and a
+     * harness that produced it would be seeding an impossible database. Since the guard now
+     * reads that record to tell "never loaded" from "no such account", a suite seeding
+     * accounts by hand has to seed the record too, which is why {@link #insertAccount} calls
+     * this itself and why suites that insert accounts their own way call it directly.
+     *
+     * <p>The count is read rather than passed in on purpose: a caller-supplied number is one
+     * more thing that can disagree with the table it describes.
+     */
+    public static void markMaterialised(JdbcTemplate jdbc) {
+        Integer applied = jdbc.queryForObject("SELECT count(*) FROM account", Integer.class);
+        jdbc.update("""
+                INSERT INTO account_reference_load (dataset_version, schema_version, source_id,
+                        effective_ts, publication_ts, row_count, checksum, applied_row_count)
+                VALUES (?,1,'fixture:test/PtvTestTables', now(), now(), ?, 'fixture', ?)""",
+                DATASET_VERSION, applied == null ? 0 : applied, applied == null ? 0 : applied);
+    }
+
+    /**
+     * Puts the database in the state a DEPLOYED environment is in: the reference table
+     * materialised, holding at least one account. Idempotent, because the suites that need
+     * it share one container across their tests.
+     *
+     * <p>The sentinel account is deliberately outside every range the suites verdict
+     * against, so "materialised" never accidentally becomes "and this payment's account
+     * exists".
+     */
+    public static void materialiseReference(JdbcTemplate jdbc) {
+        jdbc.update("""
+                INSERT INTO account (account_number, product_code, status, app_no, acc_type,
+                                     branch_code, balance, max_credit_limit, cancel_reason,
+                                     country_id, edr_ind, pre_ind, process_status, status_reason,
+                                     ucn, client_id)
+                VALUES (?,'FNBRF','AAUT',?,'CACC','250205',5000.00,NULL,NULL,1,false,false,
+                        'ACTIVE',NULL,?,2)
+                ON CONFLICT (account_number) DO NOTHING""",
+                REFERENCE_SENTINEL, REFERENCE_SENTINEL, REFERENCE_SENTINEL);
+        markMaterialised(jdbc);
     }
 
     public static void insertHeader(JdbcTemplate jdbc, UUID arrival, int txCount) {

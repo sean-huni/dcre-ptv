@@ -49,7 +49,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * just produced.
  */
 @SpringBootTest(properties = {"spring.batch.job.enabled=false",
-        "dcre.exchange-root=build/test-exchange"})
+        "dcre.exchange-root=build/test-exchange",
+        // The runtime root now DERIVES from the exchange root (the staged copy), and this
+        // suite loads the committed SOURCE out of the checkout, so it says so explicitly
+        // rather than leaning on a default that no longer names the fixtures path.
+        "dcre.ptv.reference.account.root=" + ArtifactFixture.REAL_ROOT_PATH})
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class AccountReferenceLoadIT {
 

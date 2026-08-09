@@ -75,6 +75,18 @@ class PtvSeamAndRollupIT {
     @Autowired
     ValidationLogBatchDao batchDao;
 
+    /**
+     * SCRUM-107 repair 2: a run that reaches the verdict phase now asserts the account table
+     * was MATERIALISED, so this suite puts the database in the state a deployed environment
+     * is in. The sentinel account it seeds is outside every account these tests verdict
+     * against, so "the store is loaded" never becomes "and this payment's account exists":
+     * the unknown account below is still genuinely unknown.
+     */
+    @BeforeEach
+    void materialiseReferenceStore() {
+        PtvTestTables.materialiseReference(jdbc);
+    }
+
     @BeforeEach
     void clearOutcomes() throws Exception {
         Path outcomes = EXCHANGE.resolve("outcomes");

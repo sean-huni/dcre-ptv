@@ -20,23 +20,59 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * package writes its own artifact and would stay green if the published one changed shape,
  * lost rows, or gained a column.
  *
- * <p>It reads through the same reader the loader uses, at the same relative root the yml
- * default names, so it also proves that default resolves from the module directory.
+ * <p>It reads through the same reader the loader uses.
+ *
+ * <p><b>Two different paths, and they are not interchangeable.</b>
+ * {@code infra/dcre-infra/fixtures/reference/account} is the committed SOURCE of the
+ * artifact in git, which is what this class parses. The yml default is the STAGED runtime
+ * location, derived from the exchange root, and the infra deploy step copies the source
+ * there after validating it. Before SCRUM-107 the yml named the fixtures path directly:
+ * six {@code ../} hops that resolve from a module directory on a laptop and resolve to
+ * nothing in a pod, so a deployed loader had no artifact to read and the account table
+ * stayed empty. {@link #theYmlDefaultStagesTheArtifactUnderTheExchangeRoot} pins the new
+ * default literally, and the rest of this class keeps parsing the published file, which is
+ * the part whose value is that nobody wrote the fixture it reads.
  */
 class CommittedArtifactTest {
 
     private static final Path DIRECTORY = ArtifactFixture.REAL_ROOT.resolve(ArtifactFixture.VERSION);
+
+    private static final Path YML = Path.of("src/main/resources/application.yml");
 
     private final ManifestReader manifests = new ManifestReader();
     private final AccountCsvReader csv = new AccountCsvReader();
     private final AccountReferenceMapper mapper = new AccountReferenceMapper();
 
     @Test
-    void theCommittedArtifactIsWhereTheYmlDefaultSaysItIs() {
+    void theCommittedSourceArtifactIsWhereTheInfraStepExpectsToFindIt() {
         assertTrue(Files.isDirectory(DIRECTORY),
-                "the committed artifact must resolve from the module directory through the same"
-                        + " relative root application.yml defaults to, looked at: "
+                "the committed SOURCE artifact must resolve from the module directory, because"
+                        + " the infra staging step reads it from there, looked at: "
                         + DIRECTORY.toAbsolutePath());
+    }
+
+    /**
+     * The parity pin. A default that cannot resolve in a pod is invisible to every test that
+     * hands the loader an explicit root, which is how the previous one survived: the loader
+     * was correct, the path it was pointed at did not exist, and the account table stayed
+     * empty while the verdict chain reported business rejections for the whole arrival.
+     */
+    @Test
+    void theYmlDefaultStagesTheArtifactUnderTheExchangeRoot() throws Exception {
+        String yml = Files.readString(YML).replaceAll("(?m)^\\s*#.*$", " ");
+
+        assertTrue(yml.contains("root: ${DCRE_PTV_ACCOUNT_REFERENCE_ROOT:"
+                        + "${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}"
+                        + "/reference/account}"),
+                "the runtime root must DERIVE from the exchange root, which AGT already injects"
+                        + " as DCRE_EXCHANGE_ROOT=/exchange and which is the only volume a stage"
+                        + " pod has, so /exchange/reference/account needs no new injection");
+        assertTrue(!yml.contains("DCRE_PTV_ACCOUNT_REFERENCE_ROOT:../../../../../../infra/dcre-infra/fixtures"),
+                "and it must not name the git fixtures path, which exists only in a checkout");
+        // Control: this read CAN see the key at all, so the assertions above are about the
+        // value and not about a file that moved or a comment-stripping regex that ate it.
+        assertTrue(yml.contains("dataset-version: ${DCRE_PTV_ACCOUNT_DATASET_VERSION:"),
+                "control: the reference block is present in the yml this test read");
     }
 
     @Test

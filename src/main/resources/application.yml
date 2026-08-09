@@ -48,10 +48,21 @@ dcre:
     max-partitions: ${DCRE_PTV_MAX_PARTITIONS:5}
     reference:
       account:
-        # The artifact root, relative in exactly the form dcre.exchange-root above uses:
-        # six ../ hops from this service directory to infra/dcre-infra. A clean clone
-        # runs with no .env at all.
-        root: ${DCRE_PTV_ACCOUNT_REFERENCE_ROOT:../../../../../../infra/dcre-infra/fixtures/reference/account}
+        # The artifact root, DERIVED from the exchange root (12FactorApp Alignment,
+        # https://12factor.net/). AGT already injects DCRE_EXCHANGE_ROOT=/exchange and
+        # that PVC is the only volume a stage pod has, so in a pod this resolves to
+        # /exchange/reference/account and NO new AGT env injection is needed for the
+        # root at all. On a dev machine with no .env it resolves to
+        # infra/dcre-infra/exchange/reference/account, so a clean clone still runs.
+        #
+        # infra/dcre-infra/fixtures/reference/account remains the committed SOURCE of
+        # the artifact in git; the infra deploy-time step VALIDATES it and stages a copy
+        # into the exchange root. This service reads the STAGED copy and never the git
+        # fixtures path. The previous default named the fixtures path directly, six ../
+        # hops from this module, which resolves on a laptop and cannot resolve in a pod:
+        # the loader then had nothing to read, account stayed empty, and every payment
+        # came back FAIL_ACCOUNT_NOT_FOUND.
+        root: ${DCRE_PTV_ACCOUNT_REFERENCE_ROOT:${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}/reference/account}
         # DECLARED, never discovered. There is no "newest directory" behaviour: that is
         # a fail-open, and a version this service did not ask for is a version nobody
         # decided to adopt.

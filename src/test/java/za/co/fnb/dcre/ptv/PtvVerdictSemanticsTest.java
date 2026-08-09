@@ -147,6 +147,11 @@ class PtvVerdictSemanticsTest {
         upsertAccount("62000000000002", "FNBCC", null, new BigDecimal("5000.00"), "ACTIVE");
         upsertAccount("62000000000003", "FNBRF", new BigDecimal("100.00"), null, "ACTIVE");
         upsertAccount("62000000000004", "FNBRF", new BigDecimal("5000.00"), null, "SUSPENDED");
+        // SCRUM-107 repair 2: the applier writes the load record in the SAME transaction as
+        // the rows, so a table holding rows with no record is a state dcre_pay cannot reach.
+        // Without it the run would halt as "never loaded" and the verdicts below, which are
+        // the point of this suite, would never be reached.
+        PtvTestTables.markMaterialised(jdbc);
     }
 
     void upsertAccount(String number, String productCode, BigDecimal balance, BigDecimal limit,

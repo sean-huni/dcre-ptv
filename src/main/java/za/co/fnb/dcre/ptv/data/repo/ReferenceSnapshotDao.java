@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import za.co.fnb.dcre.ptv.data.model.AccountReferenceLoad;
 import za.co.fnb.dcre.ptv.service.VerdictChain.Account;
 
 import javax.sql.DataSource;
@@ -11,9 +12,12 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -45,6 +49,14 @@ public class ReferenceSnapshotDao {
     /** The account master relation. Named once: it is in the SQL, the log and the exception. */
     static final String ACCOUNT_RELATION = "account";
 
+    /**
+     * The record of what the account relation currently holds, written in the SAME
+     * transaction as the rows it applied. It is read here, rather than {@code account}
+     * being counted, because a count cannot tell "nobody ever loaded this" from "the load
+     * ran and applied nothing" and those two need different words to an operator.
+     */
+    static final String LOAD_RELATION = "account_reference_load";
+
     /** cluster_logical_timestamp() is a plain HLC decimal; guard before inlining. */
     private static final Pattern HLC_DECIMAL = Pattern.compile("\\d+(\\.\\d+)?");
 
@@ -71,7 +83,7 @@ public class ReferenceSnapshotDao {
         String sql = "SELECT account_number, product_code, balance, max_credit_limit, process_status "
                 + "FROM " + ACCOUNT_RELATION + " AS OF SYSTEM TIME '" + requireHlc(asOf) + "' "
                 + "WHERE account_number IN (" + placeholders(accountNumbers.size()) + ")";
-        query(sql, accountNumbers, rs -> {
+        query(ACCOUNT_RELATION, sql, accountNumbers, rs -> {
             Account account = new Account(rs.getString("account_number"), rs.getString("product_code"),
                     rs.getBigDecimal("balance"), rs.getBigDecimal("max_credit_limit"),
                     rs.getString("process_status"));
@@ -80,11 +92,28 @@ public class ReferenceSnapshotDao {
         return byNumber;
     }
 
+    /**
+     * The newest load record, read AS OF the SAME snapshot the verdict ranges read and on
+     * the SAME own-connection path, so it describes the very contents those ranges will
+     * see. Empty means no load record exists; a read that could not RUN still raises
+     * {@link ReferenceUnavailableException} rather than degrading to empty, because
+     * "I could not look" must never be answered as "nothing was ever loaded".
+     */
+    public Optional<AccountReferenceLoad> latestLoad(String asOf) {
+        String sql = "SELECT dataset_version, applied_row_count FROM " + LOAD_RELATION
+                + " AS OF SYSTEM TIME '" + requireHlc(asOf) + "' "
+                + "ORDER BY created_at DESC LIMIT 1";
+        List<AccountReferenceLoad> newest = new ArrayList<>(1);
+        query(LOAD_RELATION, sql, List.of(), rs -> newest.add(new AccountReferenceLoad(
+                rs.getString("dataset_version"), rs.getInt("applied_row_count"))));
+        return newest.stream().findFirst();
+    }
+
     private interface RowConsumer {
         void accept(ResultSet rs) throws SQLException;
     }
 
-    private void query(String sql, Collection<String> params, RowConsumer consumer) {
+    private void query(String relation, String sql, Collection<String> params, RowConsumer consumer) {
         // Own connection: the AS OF read must not join the tasklet's read-write tx.
         try (Connection connection = dataSource.getConnection();
              PreparedStatement ps = connection.prepareStatement(sql)) {
@@ -103,8 +132,8 @@ public class ReferenceSnapshotDao {
             // operator greps for; "42P01 relation does not exist" and "08001 connection
             // refused" are the two shapes this actually takes in dcre_pay today.
             log.error("reference-store-unavailable stage=PTV relation={} sqlState={} reason={}",
-                    ACCOUNT_RELATION, e.getSQLState(), e.getMessage());
-            throw new ReferenceUnavailableException(ACCOUNT_RELATION, e);
+                    relation, e.getSQLState(), e.getMessage());
+            throw new ReferenceUnavailableException(relation, e);
         }
     }
 

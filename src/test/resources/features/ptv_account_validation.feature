@@ -15,9 +15,11 @@
 # rather than silently mapping the cap to NULL. Matches collections/ctv, whose
 # ctv_endo_mode.feature dropped the twin scenario for the same reason.
 #
-# "Absent" and "could not be read" are different outcomes and must stay so. This
-# feature covers the business half only; an unreadable reference store halts the
-# job with no verdict at all (AccountStoreUnavailableIT).
+# "Absent", "could not be read" and "never loaded" are three different outcomes and
+# must stay so. This feature covers the business half only. An unreadable reference
+# store halts the job with no verdict at all (AccountStoreUnavailableIT), and a store
+# that was never materialised halts it naming the deployment step that did not run
+# (AccountReferenceMaterialisationIT).
 #
 # There is no mandate scenario. Payments carry no bank-registered mandates and
 # therefore no mandate gate (SPEC-ENDO-COLLECTIONS-FLOW.md).
@@ -34,7 +36,12 @@ Feature: PTV account-level validation of inbound payment requests
     When PTV validates a payment of "300.00" against account "63010000000002" under contract "CT-ACC-02"
     Then the record is marked valid with outcome "PASS"
 
+  # "Absent from a LOADED store" is the business case. An account missing from a store that
+  # was never loaded at all is a technical failure with no verdict (SCRUM-107 repair 2), so
+  # this scenario says which of the two it is instead of leaving it to whichever scenario
+  # happened to run first.
   Scenario: Payment against an account absent from the DCRE account store is rejected
+    Given the account reference store has been loaded with other accounts
     When PTV validates a payment of "100.00" against account "63019999999901"
     Then the record is rejected with outcome "FAIL_ACCOUNT_NOT_FOUND"
     And the job verdict is "BUSINESS_PARTIAL"

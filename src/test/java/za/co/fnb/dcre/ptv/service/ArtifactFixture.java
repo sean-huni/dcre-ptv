@@ -30,9 +30,21 @@ public final class ArtifactFixture {
 
     public static final String VERSION = "2026.08.09-001";
 
-    /** The real committed artifact, at the same relative root the yml default names. */
-    public static final Path REAL_ROOT =
-            Path.of("../../../../../../infra/dcre-infra/fixtures/reference/account");
+    /**
+     * The committed SOURCE of the artifact in git. It is NOT where a running service reads
+     * from: since SCRUM-107 the yml default derives the runtime root from the exchange root
+     * ({@code ${DCRE_EXCHANGE_ROOT}/reference/account}), which is the staged copy the infra
+     * deploy step writes. Tests that need the published bytes read them here; tests that
+     * need the loader to find them point the root property at this path explicitly.
+     *
+     * <p>Declared as a {@code String} constant so it can be used inside a
+     * {@code @SpringBootTest(properties = ...)} array, which needs a compile-time constant.
+     */
+    public static final String REAL_ROOT_PATH =
+            "../../../../../../infra/dcre-infra/fixtures/reference/account";
+
+    /** {@link #REAL_ROOT_PATH} as a path. */
+    public static final Path REAL_ROOT = Path.of(REAL_ROOT_PATH);
 
     private ArtifactFixture() {
     }

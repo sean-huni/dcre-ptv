@@ -117,6 +117,11 @@ class AccountStoreUnavailableIT {
     void anAbsentAccountRelationHaltsTheJobAndWritesNoVerdict() throws Exception {
         UUID arrival = UUID.randomUUID();
         seedSpineOnly(arrival);
+        // The reference table is MATERIALISED before it is made unreadable, so the failure
+        // below can only be the unreadable relation. Without this the run would halt earlier
+        // as "never loaded" (SCRUM-107 repair 2), which is a different technical failure with
+        // a different message, and this test would pass for the wrong reason.
+        PtvTestTables.materialiseReference(jdbc);
         jdbc.execute("DROP TABLE IF EXISTS account");
 
         Logger daoLogger = (Logger) LoggerFactory.getLogger(ReferenceSnapshotDao.class);

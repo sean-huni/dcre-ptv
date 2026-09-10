@@ -3,12 +3,27 @@ spring:
   threads:
     virtual:
       enabled: true
+  batch:
+    # SCRUM-107: PTV now ships TWO jobs, the validation flow and the account reference
+    # loader, and Boot requires a name once more than one Job bean exists. The default
+    # is the validation flow, so every launch that says nothing behaves exactly as it
+    # did; AGT overrides DCRE_PTV_JOB_NAME with ptvAccountReferenceLoadJob to
+    # materialise the reference artifact. Same selector MRG uses for its report/sweep
+    # pair; the pivot constant is AccountReferenceJobConfig.JOB_NAME.
+    job:
+      name: ${DCRE_PTV_JOB_NAME:ptvJob}
   datasource:
     # dcre_pay, NOT dcre_col: the payments split gives this family its own
     # database, and that database is now the family discriminator.
-    url: ${DCRE_PAY_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}
-    username: ${DCRE_PAY_DB_USER:root}
-    password: ${DCRE_PAY_DB_PASSWORD:}
+    # DCRE_DB_URL is the WIRE CONTRACT with AGT: AGT injects exactly this name into
+    # every stage Job it launches and resolves the VALUE per family
+    # (StageDatabases.urlFor -> Flow.PAY -> payServiceDbUrl). One variable routed per
+    # family, never one variable name per family. This read said DCRE_PAY_DB_URL until
+    # SCRUM-107 and nothing anywhere set that name, so in a pod the service fell back to
+    # the committed localhost default below, which in a pod is the pod itself.
+    url: ${DCRE_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}
+    username: ${DCRE_DB_USER:root}
+    password: ${DCRE_DB_PASSWORD:}
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.xml
     # Per-service migration history (same isolation idea as PTV_BATCH_)
@@ -31,6 +46,31 @@ dcre:
   # (SPEC-ENDO-COLLECTIONS-FLOW.md: "No mandates, no mandate gate").
   ptv:
     max-partitions: ${DCRE_PTV_MAX_PARTITIONS:5}
+    reference:
+      account:
+        # The artifact root, DERIVED from the exchange root (12FactorApp Alignment,
+        # https://12factor.net/). AGT already injects DCRE_EXCHANGE_ROOT=/exchange and
+        # that PVC is the only volume a stage pod has, so in a pod this resolves to
+        # /exchange/reference/account and NO new AGT env injection is needed for the
+        # root at all. On a dev machine with no .env it resolves to
+        # infra/dcre-infra/exchange/reference/account, so a clean clone still runs.
+        #
+        # infra/dcre-infra/fixtures/reference/account remains the committed SOURCE of
+        # the artifact in git; the infra deploy-time step VALIDATES it and stages a copy
+        # into the exchange root. This service reads the STAGED copy and never the git
+        # fixtures path. The previous default named the fixtures path directly, six ../
+        # hops from this module, which resolves on a laptop and cannot resolve in a pod:
+        # the loader then had nothing to read, account stayed empty, and every payment
+        # came back FAIL_ACCOUNT_NOT_FOUND.
+        root: ${DCRE_PTV_ACCOUNT_REFERENCE_ROOT:${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}/reference/account}
+        # DECLARED, never discovered. There is no "newest directory" behaviour: that is
+        # a fail-open, and a version this service did not ask for is a version nobody
+        # decided to adopt.
+        dataset-version: ${DCRE_PTV_ACCOUNT_DATASET_VERSION:2026.08.09-001}
+        # max-age: DELIBERATELY UNSET. The freshness contract is A-4's to define, so the
+        # check ships wired and INERT and logs that it is inert on every run. Setting it
+        # here, or in any test resource, would be this service inventing a number about
+        # somebody else's dataset. Setting it ARMS the gate with no code change.
     acceptance-mode:
       default: ${DCRE_PTV_ACCEPTANCE_MODE_DEFAULT:ALL_OR_NOTHING}
       # Per-client override map. No DCRE_* env var is wired for the map: set

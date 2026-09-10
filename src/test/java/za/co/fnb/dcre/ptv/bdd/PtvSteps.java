@@ -52,6 +52,17 @@ public class PtvSteps {
         PtvTestTables.insertAccount(jdbc, number, product, cap, status);
     }
 
+    /**
+     * The distinction SCRUM-107 repair 2 exists to make: the reference store HAS been loaded
+     * and holds accounts, so an account missing from it is a business rejection. A scenario
+     * that seeds no account at all is describing an unloaded database, which halts the job
+     * technically and produces no verdict to assert.
+     */
+    @Given("the account reference store has been loaded with other accounts")
+    public void referenceStoreLoaded() {
+        PtvTestTables.materialiseReference(jdbc);
+    }
+
     @When("PTV validates a payment of {string} against account {string} under contract {string}")
     public void validateSingle(String amount, String account, String contract) throws Exception {
         addEntry(account, contract, amount, null);

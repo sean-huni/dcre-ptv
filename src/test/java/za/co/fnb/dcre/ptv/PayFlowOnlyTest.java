@@ -148,7 +148,7 @@ class PayFlowOnlyTest {
                 .replaceAll("(?m)^\\s*#.*$", " ");
         assertThat(yml)
                 .as("PTV writes dcre_pay; the database is the family discriminator now")
-                .contains("${DCRE_PAY_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay")
+                .contains("${DCRE_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay")
                 .doesNotContain("dcre_col");
     }
 

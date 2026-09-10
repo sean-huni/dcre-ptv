@@ -41,21 +41,25 @@ public class ValidationService {
 
     public sealed interface HeaderCheck {
         record FileFatal(String reason) implements HeaderCheck { }
-        record Ok(int txCount, String clientToken, String asOfTimestamp) implements HeaderCheck { }
+        record Ok(int txCount, String clientToken, String asOfTimestamp,
+                  String accountDatasetVersion) implements HeaderCheck { }
     }
 
     private final TxHeaderViewRepo headers;
     private final TxEntryViewRepo entries;
     private final ReferenceSnapshotDao referenceSnapshot;
+    private final AccountReferenceGuard accountReference;
     private final ValidationLogRepo verdicts;
     private final ValidationLogBatchDao verdictBatch;
 
     public ValidationService(TxHeaderViewRepo headers, TxEntryViewRepo entries,
                              ReferenceSnapshotDao referenceSnapshot,
+                             AccountReferenceGuard accountReference,
                              ValidationLogRepo verdicts, ValidationLogBatchDao verdictBatch) {
         this.headers = headers;
         this.entries = entries;
         this.referenceSnapshot = referenceSnapshot;
+        this.accountReference = accountReference;
         this.verdicts = verdicts;
         this.verdictBatch = verdictBatch;
     }
@@ -63,6 +67,12 @@ public class ValidationService {
     /**
      * Tier 1: header presence + declared-vs-carried count (R-19), plus the F51 snapshot
      * capture shared by every partition range.
+     *
+     * <p>SCRUM-107 repair 2: the reference materialisation check runs HERE, once, against
+     * the very snapshot the ranges will read. An unmaterialised account table raises and
+     * fails the job rather than turning into an arrival's worth of FAIL_ACCOUNT_NOT_FOUND.
+     * The FILE_FATAL arm returns before it, deliberately: a spine that contradicts its own
+     * header is decidable without reference data, and it has always been the first answer.
      */
     public HeaderCheck checkHeader(UUID arrivalId) {
         TxHeaderView header = headers.findByArrivalId(arrivalId).orElseThrow();
@@ -71,7 +81,9 @@ public class ValidationService {
             return new HeaderCheck.FileFatal("spine count " + spineCount + " != declared " + header.getTxCount());
         }
         String clientToken = header.getInitgPty() == null ? "" : header.getInitgPty().strip();
-        return new HeaderCheck.Ok(header.getTxCount(), clientToken, referenceSnapshot.snapshotTimestamp());
+        String asOfTimestamp = referenceSnapshot.snapshotTimestamp();
+        String datasetVersion = accountReference.requireMaterialised(asOfTimestamp);
+        return new HeaderCheck.Ok(header.getTxCount(), clientToken, asOfTimestamp, datasetVersion);
     }
 
     /**

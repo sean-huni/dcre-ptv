@@ -1,12 +1,25 @@
 # PTV validates every ENDO payment read by PRR against the DCRE account store
 # before the record proceeds down the pipeline.
 #
-# [SYNTHETIC-CONTRACT R-35] These are CTV's ENDO-mode semantics (A-20 draft),
-# now unconditional because payments is the only family this service serves: an
-# unknown account and a known account with no recorded cap both PASS, since PAI
-# creates absent accounts downstream (create-if-absent, R-11) and the cap check
-# applies post-init. An EXISTING account that is inactive or over its cap still
-# fails. FAIL_ACCOUNT_NOT_FOUND is the DC verdict and is unreachable here.
+# SCRUM-107 repair 1: the account tier fails CLOSED. An account the reference
+# store does not hold is rejected with FAIL_ACCOUNT_NOT_FOUND, not passed through.
+# The A-20 draft passed it on the grounds that PAI would create it downstream
+# (create-if-absent, R-11), which left the tier answering PASS in precisely the
+# case it exists to catch.
+#
+# The "no recorded cap" scenario is GONE from this file rather than inverted. The
+# arm still behaves as it did (an EXISTING account with an unset cap passes), but
+# chk_account_product_amount on dcre_pay.account forbids such a row outright, so it
+# cannot be reached through the table any more. It is asserted where it lives, in
+# VerdictChainAccountTierTest, and a Given step that seeds it now fails loudly
+# rather than silently mapping the cap to NULL. Matches collections/ctv, whose
+# ctv_endo_mode.feature dropped the twin scenario for the same reason.
+#
+# "Absent", "could not be read" and "never loaded" are three different outcomes and
+# must stay so. This feature covers the business half only. An unreadable reference
+# store halts the job with no verdict at all (AccountStoreUnavailableIT), and a store
+# that was never materialised halts it naming the deployment step that did not run
+# (AccountReferenceMaterialisationIT).
 #
 # There is no mandate scenario. Payments carry no bank-registered mandates and
 # therefore no mandate gate (SPEC-ENDO-COLLECTIONS-FLOW.md).
@@ -23,10 +36,15 @@ Feature: PTV account-level validation of inbound payment requests
     When PTV validates a payment of "300.00" against account "63010000000002" under contract "CT-ACC-02"
     Then the record is marked valid with outcome "PASS"
 
-  Scenario: Payment against an account absent from the DCRE account store passes through for downstream creation
+  # "Absent from a LOADED store" is the business case. An account missing from a store that
+  # was never loaded at all is a technical failure with no verdict (SCRUM-107 repair 2), so
+  # this scenario says which of the two it is instead of leaving it to whichever scenario
+  # happened to run first.
+  Scenario: Payment against an account absent from the DCRE account store is rejected
+    Given the account reference store has been loaded with other accounts
     When PTV validates a payment of "100.00" against account "63019999999901"
-    Then the record is marked valid with outcome "PASS"
-    And the job verdict is "BUSINESS_ACCEPTED"
+    Then the record is rejected with outcome "FAIL_ACCOUNT_NOT_FOUND"
+    And the job verdict is "BUSINESS_PARTIAL"
 
   Scenario: Payment against an account that is not ACTIVE
     Given a payments account "63010000000003" with product "FNBRF", cap "5000.00" and status "SUSPENDED"
@@ -43,11 +61,6 @@ Feature: PTV account-level validation of inbound payment requests
     Given a payments account "63010000000005" with product "FNBCC", cap "1000.00" and status "ACTIVE"
     When PTV validates a payment of "1500.00" against account "63010000000005"
     Then the record is rejected with outcome "FAIL_EXCEEDS_CC_LIMIT"
-
-  Scenario: Payment against a known account with no recorded cap passes through
-    Given a payments account "63010000000006" with product "FNBCC", cap "none" and status "ACTIVE"
-    When PTV validates a payment of "100.00" against account "63010000000006"
-    Then the record is marked valid with outcome "PASS"
 
   Scenario: Payment reusing an EndToEndId already seen in the file
     Given a payments account "63010000000007" with product "FNBRF", cap "5000.00" and status "ACTIVE"

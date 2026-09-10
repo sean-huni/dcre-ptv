@@ -11,5 +11,9 @@
          successor here: dcre_pay never held a mandate table. -->
     <include file="db/changelog/2026/08/001-ptv-validation.xml"/>
     <include file="db/changelog/2026/08/002-batch-metadata.xml"/>
+    <!-- SCRUM-107: dcre_pay.account (the payments materialisation of the versioned
+         account reference artifact) plus the record of what each load consumed.
+         PTV is the creator; ptvAccountReferenceLoadJob is the filler. -->
+    <include file="db/changelog/2026/08/003-account-reference.xml"/>
 
 </databaseChangeLog>

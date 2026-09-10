@@ -31,10 +31,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * The payments verdict semantics, end to end through the real job.
  *
- * <p>[SYNTHETIC-CONTRACT R-35] These are CTV's ENDO-mode semantics (A-20 draft),
- * now unconditional rather than switched on {@code dcre.flow-dc=false}: PAI creates
- * absent accounts downstream (create-if-absent), so an unknown account and a known
- * account with a NULL cap both PASS. An EXISTING over-cap account still fails.
+ * <p>SCRUM-107 repair 1 replaced the A-20 draft pass-through on an ABSENT account. An
+ * account the reference store does not hold is now {@code FAIL_ACCOUNT_NOT_FOUND}: a
+ * rejection carrying its own reason, not a PASS. The old rationale was that PAI would
+ * create the account downstream (create-if-absent, R-11), which made the account tier
+ * a control that answered PASS in exactly the case it exists to catch.
+ *
+ * <p>The unset-cap arm is NOT asserted here. That row EXISTS and only its cap is unset,
+ * which is a different question and one the open account-model decision owns, but
+ * {@code chk_account_product_amount} on the real relation forbids such a row outright, so
+ * it is asserted in {@code VerdictChainAccountTierTest} where the chain is DB-free.
  *
  * <p>Note what is NOT here and cannot be: CTV's ENDO suites have to aim a CLOSED
  * PORT at {@code dcre.ctv.mandates-db-url} to prove nothing opens a dcre_man
@@ -70,7 +76,7 @@ class PtvVerdictSemanticsTest {
     JdbcTemplate jdbc;
 
     @Test
-    void unknownAndNullCapAccountsPassThroughButOverCapStillFails() throws Exception {
+    void unknownAccountsAreRejectedWhileNullCapPassesAndOverCapStillFails() throws Exception {
         UUID arrival = UUID.randomUUID();
         seedReferenceData();
         seedSpine(arrival);
@@ -88,10 +94,10 @@ class PtvVerdictSemanticsTest {
                 "the over-cap entry must still fail");
 
         Map<Integer, String> expected = Map.of(
-                1, "PASS",                    // unknown account: PAI creates it downstream
-                2, "PASS",                    // second unknown account, same pass-through
+                1, "FAIL_ACCOUNT_NOT_FOUND",   // absent from the reference store: rejected
+                2, "FAIL_ACCOUNT_NOT_FOUND",   // second absent account, same rejection
                 3, "PASS",                    // known, under cap
-                4, "PASS",                    // known, NULL cap: cap check post-init
+                4, "PASS",                    // known FNBCC, 300.00 under its 5000.00 limit
                 5, "FAIL_EXCEEDS_RF_BALANCE", // existing over-cap account still fails
                 6, "FAIL_ACCOUNT_NOT_ACTIVE"  // existing but SUSPENDED
         );
@@ -100,17 +106,24 @@ class PtvVerdictSemanticsTest {
                 r -> {
                     actual.put(r.getInt(1), r.getString(2));
                 }, arrival);
-        assertEquals(expected, actual, "payments verdicts per A-20 draft [SYNTHETIC-CONTRACT R-35]");
+        assertEquals(expected, actual, "payments account-tier verdicts, fail closed on absence");
 
-        // R-38 exclusion visibility: exactly two FAIL verdicts -> exactly two WARNs at decision time.
+        // R-38 exclusion visibility: exactly four FAIL verdicts -> exactly four WARNs at
+        // decision time. These WARNs are the BUSINESS channel; the technical channel is the
+        // ERROR carrying reference-store-unavailable, asserted in AccountStoreUnavailableIT.
+        // Nothing may appear in both.
         List<String> exclusionWarns = warns.list.stream()
                 .filter(e -> e.getLevel() == Level.WARN)
                 .map(ILoggingEvent::getFormattedMessage)
                 .filter(m -> m.contains("excluded stage=PTV"))
                 .sorted()
                 .toList();
-        assertEquals(2, exclusionWarns.size(), "one WARN per FAIL verdict (R-38)");
+        assertEquals(4, exclusionWarns.size(), "one WARN per FAIL verdict (R-38)");
         assertEquals(List.of(
+                        "excluded stage=PTV arrival=" + arrival + " seq=1 e2e=ENDO-E2E-00001"
+                                + " reason=PTV_FAIL_ACCOUNT_NOT_FOUND",
+                        "excluded stage=PTV arrival=" + arrival + " seq=2 e2e=ENDO-E2E-00002"
+                                + " reason=PTV_FAIL_ACCOUNT_NOT_FOUND",
                         "excluded stage=PTV arrival=" + arrival + " seq=5 e2e=ENDO-E2E-00005"
                                 + " reason=PTV_FAIL_EXCEEDS_RF_BALANCE",
                         "excluded stage=PTV arrival=" + arrival + " seq=6 e2e=ENDO-E2E-00006"
@@ -120,29 +133,36 @@ class PtvVerdictSemanticsTest {
     }
 
     void seedReferenceData() {
-        // Minimal PAI-shaped account read model (PTV maps only these columns).
-        // [SYNTHETIC-CONTRACT R-35] Deliberately WITHOUT the fixture seed's
-        // product/cap CHECK constraint: the NULL-cap row models exactly the
-        // pre-init account state that constraint forbids for settled rows.
-        jdbc.execute("""
-                CREATE TABLE IF NOT EXISTS account (
-                    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                    account_number VARCHAR(34) NOT NULL UNIQUE,
-                    product_code VARCHAR(8) NOT NULL,
-                    balance DECIMAL(18,2) NULL,
-                    max_credit_limit DECIMAL(18,2) NULL,
-                    process_status VARCHAR(16) NOT NULL)""");
+        // The REAL relation, created by 003-account-reference.xml in the full collections
+        // shape. This suite used to stand up a six-column imitation of it, which meant
+        // every verdict below was read off a table that existed nowhere.
+        //
+        // Every row here is one dcre_pay.account would actually accept, all three CHECK
+        // constraints armed. 62000000000002 was a NULL-cap FNBCC row until SCRUM-107; that
+        // row is unrepresentable under chk_account_product_amount, so it is now an FNBCC
+        // account UNDER its limit, which keeps what this case was testing (a credit product
+        // passing the cap tier) and stops manufacturing a state no loader can write. The
+        // unset-cap arm moved to VerdictChainAccountTierTest, where the chain is DB-free.
         upsertAccount("62000000000001", "FNBRF", new BigDecimal("5000.00"), null, "ACTIVE");
-        upsertAccount("62000000000002", "FNBCC", null, null, "ACTIVE");
+        upsertAccount("62000000000002", "FNBCC", null, new BigDecimal("5000.00"), "ACTIVE");
         upsertAccount("62000000000003", "FNBRF", new BigDecimal("100.00"), null, "ACTIVE");
         upsertAccount("62000000000004", "FNBRF", new BigDecimal("5000.00"), null, "SUSPENDED");
+        // SCRUM-107 repair 2: the applier writes the load record in the SAME transaction as
+        // the rows, so a table holding rows with no record is a state dcre_pay cannot reach.
+        // Without it the run would halt as "never loaded" and the verdicts below, which are
+        // the point of this suite, would never be reached.
+        PtvTestTables.markMaterialised(jdbc);
     }
 
     void upsertAccount(String number, String productCode, BigDecimal balance, BigDecimal limit,
                        String status) {
         jdbc.update("""
-                UPSERT INTO account (account_number, product_code, balance, max_credit_limit, process_status)
-                VALUES (?,?,?,?,?)""", number, productCode, balance, limit, status);
+                UPSERT INTO account (account_number, product_code, status, app_no, acc_type,
+                                     branch_code, balance, max_credit_limit, cancel_reason,
+                                     country_id, edr_ind, pre_ind, process_status, status_reason,
+                                     ucn, client_id)
+                VALUES (?,?,'AAUT',?,'CACC','250205',?,?,NULL,1,false,false,?,NULL,?,2)""",
+                number, productCode, number, balance, limit, status, number);
     }
 
     void seedSpine(UUID arrival) {

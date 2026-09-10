@@ -39,6 +39,10 @@ public class HeaderCheckTasklet implements Tasklet {
                 context.putLong("txCount", ok.txCount());
                 context.putString("clientToken", ok.clientToken());
                 context.putString("asOfTimestamp", ok.asOfTimestamp());
+                // Which reference data this run validated against, answerable from Batch
+                // metadata long after the run: the account table is replaced wholesale by
+                // each load, so the table alone cannot say what an old run saw.
+                context.putString("accountDatasetVersion", ok.accountDatasetVersion());
             }
         }
         return RepeatStatus.FINISHED;

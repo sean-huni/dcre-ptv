@@ -38,6 +38,10 @@
         an UPDATE nothing issues is not worth a raw-SQL changeset.
     -->
     <changeSet id="ptv-003-account" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="account"/></not>
+        </preConditions>
+        
         <createTable tableName="account">
             <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
                 <constraints primaryKey="true" nullable="false"/>
@@ -80,6 +84,10 @@
          so an account_number uniqueness claim has to be its own constraint or it is
          not enforced at all. -->
     <changeSet id="ptv-003-account-identity" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><indexExists tableName="account" indexName="uq_account_account_number"/></not>
+        </preConditions>
+        
         <addUniqueConstraint tableName="account" columnNames="account_number"
                              constraintName="uq_account_account_number"/>
         <rollback>
@@ -100,6 +108,12 @@
          everything under db/changelog/ must be XML (rules/be/java/persistence.md
          point 22, hook-enforced). -->
     <changeSet id="ptv-003-account-checks" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not>
+                <sqlCheck expectedResult="3">SELECT count(*) FROM information_schema.table_constraints WHERE table_schema = current_schema() AND table_name = 'account' AND constraint_name IN ('chk_account_product', 'chk_account_product_amount', 'chk_account_amounts_nonneg')</sqlCheck>
+            </not>
+        </preConditions>
+        
         <sqlFile path="db/sql/account-checks-ptv.sql" splitStatements="true"/>
         <rollback>
             <sqlFile path="db/sql/account-checks-ptv-rollback.sql" splitStatements="true"/>
@@ -115,6 +129,10 @@
         account_reference_load_dataset_version.
     -->
     <changeSet id="ptv-003-account-reference-load" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="account_reference_load"/></not>
+        </preConditions>
+        
         <createTable tableName="account_reference_load">
             <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
                 <constraints primaryKey="true" nullable="false"/>

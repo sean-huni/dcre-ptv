@@ -113,6 +113,7 @@ Spring Batch metadata lives under the `PTV_BATCH_` prefix (A-39b) with `initiali
 - Docker (Testcontainers in tests, Paketo image build for the cluster)
 - Platform libraries in Maven Local (no remote repository): run `./gradlew publishToMavenLocal` in each dependency repo, publish chain `dcre-platform-model` -> `dcre-platform-files` -> `dcre-platform-batch`; `dcre-platform-persistence` is standalone. Declared directly: `za.co.fnb.dcre:platform-persistence:0.1.0` (`BaseEntity`, `JdbcConfig`) and `za.co.fnb.dcre:platform-batch:0.1.0` (`ExitCodeMain`, `OutcomeFileWriter`, `StaleExecutionSweeper`, `PartitionSizer`, `CrdbRetryExceptionHandler`); `platform-model` (`CtvOutcome`, `ProductType`) and `platform-files` arrive transitively via `platform-batch`'s `api` chain.
 - A reachable CockroachDB for a local run (the dcre-infra kind cluster with `scripts/crdb-forward.sh`, or any CRDB on `localhost:26257`)
+- The `dcre_pay` database must be created by hand (`CREATE DATABASE IF NOT EXISTS dcre_pay;`): dcre-infra's `scripts/crdb-init.sql` creates only `dcre_col`, `agt_ops` and `dcre_man` (checked 2026-09-28).
 
 ## Quickstart
 

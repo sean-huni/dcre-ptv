@@ -1,19 +1,35 @@
 # dcre-ptv
 
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+
 Payments Transaction Validator: DB-only DCRE stage (R-30) that validates every ENDO payment transaction against the account reference store and writes per-transaction verdicts to `validation_log` in `dcre_pay`.
 
 The box caption on the payments sheet is **"Validates TxHeader & TxEntries"**.
 
 ## What it does
 
-PTV is the second stage of the payments request DAG:
+| | |
+| --- | --- |
+| Stage code | `PTV` (AGT `Stage.PTV`) |
+| Family / leg | payments (ENDO), REQ |
+| Trigger | arrival-launched: a DAG successor, one Kubernetes Job per arrival |
+| Upstream | `PRR` |
+| Downstream | `PAI`; on a whole-file rejection AGT launches the responder `PIR` instead |
+| Diagram sheet | `dcre-payments-req` in the design register |
+
+PTV is the second stage of the payments request DAG. AGT's `RouteDags.ENDO` (checked 2026-09-28)
+serves route `onhost-req-endo`:
 
 ```
-PAYMENTS  onhost-req-pay:  PRR -> PTV -> PAI -> { PRW -> Fintegrate request
-                                               || PIR -> OnHost response }
+PAYMENTS  onhost-req-endo:  PRR -> PTV -> PAI -> { PRW -> Fintegrate request
+                                                || PIR -> OnHost response }
 ```
 
 AGT launches it as a short-lived Kubernetes Job per arrival (identifying job parameter `arrival.id`, a UUID). It has no file I/O of its own and transitions strictly via the database (R-30). The job runs four phases: a tier-1 header/count check (`FILE_FATAL` on mismatch), a set-based SQL duplicate scan, a partitioned per-transaction validation pass, and a verdict rollup that applies per-client acceptance mode (R-41). The rollup verdict is staged to an outcome seam file that AGT reads.
+
+PTV ships a SECOND job, `ptvAccountReferenceLoadJob`, selected by `DCRE_PTV_JOB_NAME` (default
+`ptvJob`). It materialises the versioned account reference artifact into `dcre_pay.account`; see
+Data below.
 
 ### Why this repo exists: the payments split
 
@@ -46,20 +62,23 @@ Also dropped in the reduction: `platform-copybook` (PTV never reads a file; CTV 
 
 `VerdictChain.classify(entry, accounts)` is the account tier and nothing else: account exists -> account active -> account cap (balance for balance-carrying products, else `max_credit_limit`). Duplicate rules are NOT in this chain; they run set-based in `dupScanStep` before it.
 
-[SYNTHETIC-CONTRACT R-35] The pass-through semantics are CTV's ENDO-mode ones (A-20 draft), now unconditional: an unknown account and a known account with a NULL cap both **PASS**, because PAI creates absent accounts downstream (create-if-absent, R-11) and the cap check applies post-init. An EXISTING account that is inactive or over its cap still fails.
+**The account tier fails CLOSED (SCRUM-107 repair 1).** An account absent from the reference snapshot is `FAIL_ACCOUNT_NOT_FOUND`. It used to PASS on the A-20 draft reasoning that PAI minted absent accounts downstream; PAI no longer writes `account`. An EXISTING account with a NULL cap still passes the cap tier (existence and activity were checked; whether an unset cap should reject is an open account-model question). An existing account that is inactive or over its cap fails.
+
+"Absent" is not "unreadable": a reference store that cannot be read raises `ReferenceUnavailableException` and the job FAILS rather than verdicting. And before any verdict, `AccountReferenceGuard` checks the latest `account_reference_load` row as of the snapshot: never loaded, or loaded with zero rows, fails the job (repair 2), so an empty store cannot turn a whole arrival into `FAIL_ACCOUNT_NOT_FOUND`.
 
 Reachable outcomes, and the full list of them:
 
 | Outcome | When |
 |---|---|
-| `PASS` | admissible, including an unknown account and a NULL-cap account |
+| `PASS` | admissible, including an existing account with a NULL cap |
+| `FAIL_ACCOUNT_NOT_FOUND` | no `account` row for the creditor account in the as-of snapshot |
 | `FAIL_ACCOUNT_NOT_ACTIVE` | the account exists and `process_status <> 'ACTIVE'` |
 | `FAIL_EXCEEDS_RF_BALANCE` | balance-carrying product, amount over `balance` |
 | `FAIL_EXCEEDS_CC_LIMIT` | limit product, amount over `max_credit_limit` |
 | `FAIL_DUPLICATE_E2E` | in-file EndToEndId repeat (dup scan, R-25) |
 | `FAIL_DUPLICATE_TX` | in-file content-hash clash (dup scan, R-41) |
 
-`FAIL_ACCOUNT_NOT_FOUND` is the DC verdict for an unknown account and is **unreachable here**. So is every mandate-tier outcome (`FAIL_MANDATE_*`, `FAIL_CONTRACT_MISMATCH`, `FAIL_EXCEEDS_MANDATE_CAP`): there is no mandate tier.
+Every mandate-tier outcome is unreachable here (`FAIL_MANDATE_*`, `FAIL_CONTRACT_MISMATCH`, `FAIL_EXCEEDS_MANDATE_CAP`): there is no mandate tier.
 
 R-38 exclusion visibility: one WARN per non-PASS verdict at decision time (dup scan and per-tx pass alike), shape `excluded stage=PTV arrival=<id> seq=<n> e2e=<e2e> reason=PTV_<OUTCOME>`; `validation_log` remains the durable record.
 
@@ -76,19 +95,21 @@ Per-client acceptance mode resolves from the header client token via `dcre.ptv.a
 
 ### Data
 
-All in `dcre_pay`. No cross-database read of any kind.
+All in `dcre_pay` (`DCRE_DB_URL` / `DCRE_DB_USER` / `DCRE_DB_PASSWORD`). No cross-database read of any kind. A second datasource, `DCRE_AGTOPS_DB_URL` / `_USER` / `_PASSWORD`, targets `agt_ops` for the `HeartbeatWriter` liveness stamp.
 
-Reads (grants-based, R-04/R-06): `tx_header` + `tx_entry` (PRR-owned spine; the dup scan reads `tx_entry.content_hash`, populated by PRR at ingest), `account` (PAI is the writer, R-11; bootstrapped `IF NOT EXISTS` by PAI's `000-bootstrap` changeset). `tx_entry.mandate_ref` exists on the shared physical layout and PRR persists it, but PTV does not map it: there is no gate to feed it to.
+Reads (grants-based, R-04/R-06): `tx_header` + `tx_entry` (PRR-owned spine; the dup scan reads `tx_entry.content_hash`, populated by PRR at ingest) and `account` + `account_reference_load` (PTV's own, below). `tx_entry.mandate_ref` exists on the shared physical layout and PRR persists it, but PTV does not map it: there is no gate to feed it to.
 
-Writes: `validation_log` (PTV single writer, R-04; UNIQUE(arrival_id, sequence)), batched 500 rows/statement.
+Writes: `validation_log` (PTV single writer, R-04; UNIQUE(arrival_id, sequence)), batched 500 rows/statement. The reference loader writes `account` (whole-table replacement in one transaction) and one `account_reference_load` row recording what it applied. PAI reads `account` too (checked 2026-09-28).
 
-Liquibase: `db/changelog/db.changelog-master.xml`; per-service history tables `ptv_databasechangelog` / `ptv_databasechangeloglock` (same isolation idea as `PTV_BATCH_`). Two changesets, both `onFail="CONTINUE"` and never `MARK_RAN` (a MARK_RAN skip is recorded permanently, which has cost this project two defects, A-79 and A-81): 001 creates `validation_log` with its BaseEntity columns declared in the `createTable` and its unique constraint, 002 applies the `PTV_BATCH_` metadata DDL from a SQL file carrying `IF NOT EXISTS` on every `CREATE` plus `<validCheckSum>ANY</validCheckSum>`.
+**Account reference loader.** `ptvAccountReferenceLoadJob` reads `<root>/<dataset-version>/manifest.properties` and `account.csv`, where root is `DCRE_PTV_ACCOUNT_REFERENCE_ROOT` (default `<DCRE_EXCHANGE_ROOT>/reference/account`) and the version is DECLARED by `DCRE_PTV_ACCOUNT_DATASET_VERSION` (default `2026.08.09-001`), never discovered. In order: directory present, manifest, dataset version equals the declared one, supported schema version, SHA-256 checksum over the CSV bytes, parse, row count, freshness (wired but inert: no max age is set), project, apply. Every arm fails the job; none keeps what the table already held. No 40001 retry and no outcome seam: a reference load is not an arrival.
+
+Liquibase: `db/changelog/db.changelog-master.xml`; per-service history tables `ptv_databasechangelog` / `ptv_databasechangeloglock`. `001-ptv-validation.xml` (two changesets: `validation_log` and its identity constraint) guards with `onFail="CONTINUE"`, never `MARK_RAN` (a MARK_RAN skip is recorded permanently, which has cost this project two defects, A-79 and A-81). `002-batch-metadata.xml` applies the `PTV_BATCH_` metadata DDL from a SQL file carrying `IF NOT EXISTS` on every `CREATE` plus `<validCheckSum>ANY</validCheckSum>`. `003-account-reference.xml` (four changesets: `account`, its identity, its check constraints from `db/sql/account-checks-ptv.sql` with a rollback file, and `account_reference_load`) is a v1 baseline with no preconditions.
 
 Spring Batch metadata lives under the `PTV_BATCH_` prefix (A-39b) with `initialize-schema: never` (Liquibase owns the DDL).
 
 ## Prerequisites
 
-- Java 25 (`.sdkmanrc` pins `25-tem`)
+- Java 25 (`.sdkmanrc` pins `java=25-tem`); Gradle 9.5.1 via the committed wrapper
 - Docker (Testcontainers in tests, Paketo image build for the cluster)
 - Platform libraries in Maven Local (no remote repository): run `./gradlew publishToMavenLocal` in each dependency repo, publish chain `dcre-platform-model` -> `dcre-platform-files` -> `dcre-platform-batch`; `dcre-platform-persistence` is standalone. Declared directly: `za.co.fnb.dcre:platform-persistence:0.1.0` (`BaseEntity`, `JdbcConfig`) and `za.co.fnb.dcre:platform-batch:0.1.0` (`ExitCodeMain`, `OutcomeFileWriter`, `StaleExecutionSweeper`, `PartitionSizer`, `CrdbRetryExceptionHandler`); `platform-model` (`CtvOutcome`, `ProductType`) and `platform-files` arrive transitively via `platform-batch`'s `api` chain.
 - A reachable CockroachDB for a local run (the dcre-infra kind cluster with `scripts/crdb-forward.sh`, or any CRDB on `localhost:26257`)
@@ -112,6 +133,9 @@ Spring Boot 4.1.0, Java 25, `application.yml` only. Env overrides:
 | `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | the payments CockroachDB |
 | `DCRE_DB_USER` / `DCRE_DB_PASSWORD` | `root` / empty | DB credentials |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../../infra/dcre-infra/exchange` | outcome seam directory |
+| `DCRE_PTV_JOB_NAME` | `ptvJob` | Selects the Batch job; `ptvAccountReferenceLoadJob` runs the reference loader |
+| `DCRE_PTV_ACCOUNT_REFERENCE_ROOT` | `${DCRE_EXCHANGE_ROOT}/reference/account` | Account reference artifact root |
+| `DCRE_PTV_ACCOUNT_DATASET_VERSION` | `2026.08.09-001` | Declared artifact version (subdirectory of the root) |
 | `DCRE_PTV_MAX_PARTITIONS` | `5` | R-41 validation grid size cap (clamped to cgroup-aware CPU count) |
 | `DCRE_PTV_ACCEPTANCE_MODE_DEFAULT` | `ALL_OR_NOTHING` | R-41 default acceptance mode |
 | `DCRE_AGTOPS_DB_URL` / `_USER` / `_PASSWORD` | `…/agt_ops`, `root`, empty | heartbeat liveness stamp (M12) |
@@ -121,12 +145,19 @@ There is deliberately **no** `DCRE_FLOW_DC`, no `DCRE_PTV_MANDATE_SOURCE` and no
 
 Per-client acceptance overrides are yaml-only (no env var is wired for the map) and client tokens are UPPERCASE, so keys MUST be bracketed to survive relaxed binding: `dcre.ptv.acceptance-mode.clients.[FNBCC02]=PARTIAL`. `FNBCC02: PARTIAL` is a committed working default (SCRUM-42) so in-cluster partial-failure scenarios run without env passthrough. `DCRE_AMOUNT_SCALE` and `DCRE_V1_ENABLED` sit in the shared config block but are not consumed by PTV code.
 
+This table is the documented set, not a closed total: Spring Boot relaxed binding lets any property be overridden by its environment-variable form (the bracketed map keys above are the exception that needs yaml or a property).
+
 ## Testing
 
 `./gradlew test` (Docker required; Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`):
 
 - `PayFlowOnlyTest`: the fork guard. No flow discriminator and no mandate coupling, asserted structurally (the `@Import` list, `TxEntryView`'s fields, `VerdictChain.classify`'s signature) as well as by literal scan, plus that the configured database is `dcre_pay`.
-- `PtvVerdictSemanticsTest`: unknown-account and NULL-cap pass-through, inactive and over-cap still failing, and the exact R-38 WARN shape with a `stage=PTV` token.
+- `PtvVerdictSemanticsTest`: unknown accounts rejected, NULL cap passing, over-cap failing, and the exact R-38 WARN shape with a `stage=PTV` token.
+- `VerdictChainAccountTierTest`: the account tier fails closed on a missing row, DB-free.
+- `ReferenceSnapshotDaoTechnicalFailureTest` / `AccountStoreUnavailableIT`: an unreadable store raises and the job halts rather than verdicting.
+- `AccountReferenceGuardTest` / `AccountReferenceMaterialisationIT`: never loaded, loaded empty and loaded, in the order a real environment passes through them.
+- `AccountReferenceLoadServiceTest` / `AccountReferenceLoadIT` / `AccountReferenceConstraintIT`: each loader failure arm by its specific discrepancy, the real load through the Liquibase-created relation, and every `account` constraint proved by rejection.
+- `CommittedArtifactTest`: parses the real committed artifact from `dcre-infra`'s fixtures (monorepo layout) rather than one the suite wrote.
 - `DupScanServiceIT`: R-41 dup-scan precedence (content clash -> FAIL_DUPLICATE_TX, e2e clash -> FAIL_DUPLICATE_E2E, e2e wins on a row that is both).
 - `PtvPartitionDeterminismIT`: same 10-row arrival under max-partitions 1 vs 5 yields identical (sequence, outcome) sets.
 - `PtvSeamAndRollupIT`: the actual seam-file content for BUSINESS_FILE_REJECTED / BUSINESS_FILE_FATAL / BUSINESS_ACCEPTED, the self-describing local seam name, the zero-tx empty-partition path, and phase-1-dup-wins at the batch DAO.
@@ -141,7 +172,13 @@ Per-client acceptance overrides are yaml-only (no env var is wired for the map) 
 kind load docker-image --name dcre-dev dcre-ptv:2.0
 ```
 
-The fleet runs on the dcre-infra kind cluster (`scripts/kind-up.sh`); `scripts/switch-version.sh VERSION` points AGT at the tag. AGT then launches one Kubernetes Job per arrival with the `JOB_NAME` env and the identifying `arrival.id=<uuid>` program argument. Operational signals: the R-38 exclusion WARNs, the outcome seam file, and the R-34 exit code observed by AGT.
+```bash
+kubectl set env -n dcre deploy/dcre-agt AGT_PTV_IMAGE=dcre-ptv:2.0
+```
+
+The fleet runs on the dcre-infra kind cluster (`scripts/kind-up.sh`). AGT resolves the image from `AGT_PTV_IMAGE` (empty means launch-disabled); `scripts/switch-version.sh` does not export it (its stage roster predates the payments split, checked 2026-09-28), hence the explicit `kubectl set env`. AGT launches one Job per arrival in the `dcre-pay` namespace with the identifying `arrival.id=<uuid>` program argument and env `JOB_NAME`, `DCRE_DB_URL` (the `dcre_pay` URL), `DCRE_EXCHANGE_ROOT=/exchange`, `DCRE_AGTOPS_DB_URL` and `DCRE_AGTOPS_DB_USER`.
+
+**AGT does not launch the reference loader** (no `DCRE_PTV_JOB_NAME` anywhere in AGT, checked 2026-09-28). Until it does, `ptvAccountReferenceLoadJob` must be run out of band against `dcre_pay` with the artifact staged under `/exchange/reference/account/<dataset-version>/`; without a successful load every `ptvJob` fails at the guard. Operational signals: the R-38 exclusion WARNs, the outcome seam file, and the R-34 exit code observed by AGT.
 
 ## Related repositories
 
